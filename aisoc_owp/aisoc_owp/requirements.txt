@@ -1,0 +1,3 @@
+cryptography>=42
+# optional, for the real OpenWorkProof backend (see aisoc/owp_adapter.py):
+# openworkproof==1.4.0   # Python 3.12
