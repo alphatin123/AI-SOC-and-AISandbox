@@ -67,7 +67,7 @@ administered domains with no reachable path from A to the private keys.
 | Table III multi-path decision incl. conflict and insufficient-evidence branches; missing data ⇒ UNKNOWN | `dual_model.py` (`CaseStatus`, `DualModel.decide`) |
 | same decision table fed by an external detector (Slips) in place of one or both branches | `dual_model.py` (`ExternalKnown`, `ExternalAnomaly`, `DualModel.decide_external`) |
 | leave-one-family-out, time-ordered split | `simulate.py` (`generate(held_out_family=...)`) |
-| model as a signed, hash-pinned artefact crossing from the training domain | `dual_model.py` (`to_bytes` / `from_bytes`, schema + feature-schema checks), `release.py` (`release_model`, `load_verified_model`, role `model_release`) |
+| model as a signed, hash-pinned artefact crossing from the training domain | `dual_model.py` (`to_bytes` / `from_bytes`, schema + feature-schema checks), `release.py` (`release_model`, `verify_release` → `VerifiedRelease`, role `model_release`); `AISOC.__init__` records `verified` only for a `VerifiedRelease` bound to the very model object being loaded |
 
 Scores `c_k`, `s_a` and `τ_a` are stored separately on every `CaseDecision`.
 Labels are consumed only in `DualModel.train`; the agent's verdicts are never
@@ -105,8 +105,9 @@ known-branch claim; the Slips evidence `Description` is only ever an
   approval. Envelope fields follow §VIII-B. The approval step is pluggable
   (`AISOC.set_approval_provider`): the default is the local `HumanApprover`
   stub; `adapters/aisoc_stack.AiSOCApprovalBridge` routes it through the AiSOC
-  approval inbox and fails closed with a *signed* reject on deny, timeout,
-  transport error or a mismatched `request_digest` echo.
+  approval inbox and fails closed with a *signed* reject on deny, timeout
+  (including a decision that arrives after the deadline), transport error or
+  a missing / mismatched `request_digest` echo.
 * `pep.py` – check order: signature → binding (request/params/destination
   digests) → expiry → revocation → approval presence → idempotency → atomic
   nonce → bounded execution with egress default-deny → executor-signed

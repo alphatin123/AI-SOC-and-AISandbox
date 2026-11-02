@@ -93,8 +93,103 @@ def test_zeek_conn_index_json_and_tsv():
     finally:
         p.unlink()
     agg2 = idx2.aggregate(["U1", "U2"])
-    assert agg2["bytes_out"] == 100 and agg2["pkts_in"] == 4 and agg2["conn_failures"] == 1 and agg2["distinct_dst_ports"] == 2
+    # U2 (S0) never measured duration/bytes: those aggregates stay None instead of silently becoming 0
+    assert agg2["bytes_out"] is None and agg2["bytes_in"] is None and agg2["duration_s"] is None
+    assert agg2["pkts_in"] == 4 and agg2["pkts_out"] == 4
+    assert agg2["conn_failures"] == 1 and agg2["distinct_dst_ports"] == 2 and agg2["short_window_conns"] == 2
     assert agg2["mean_iat_ms"] == pytest.approx(1000.0)
+    only_u1 = idx2.aggregate(["U1"])
+    assert only_u1["bytes_out"] == 100 and only_u1["bytes_in"] == 200 and only_u1["duration_s"] == 2.0
+    assert only_u1["mean_iat_ms"] == pytest.approx(1000.0 * 2.0 / 6)
+
+
+def _tsv_index(tmp_path, rows):
+    header = [
+        "#separator \\x09",
+        "#fields\tts\tuid\tid.orig_h\tid.orig_p\tid.resp_h\tid.resp_p\tproto\tduration\torig_bytes\tresp_bytes\torig_pkts\tresp_pkts\tconn_state",
+    ]
+    p = tmp_path / "conn.log"
+    p.write_text("\n".join(header + rows))
+    return ZeekConnIndex.load(p)
+
+
+def _event_with(line: str, **note_overrides):
+    rec = json.loads(line)
+    note = json.loads(rec["Note"])
+    src = note_overrides.pop("source_ip", None)
+    note.update(note_overrides)
+    rec["Note"] = json.dumps(note)
+    if src:
+        rec["Source"][0]["IP"] = src
+    return json.dumps(rec)
+
+
+def test_note_that_decodes_to_a_non_object_is_treated_as_empty():
+    rec = json.loads(sample_alerts_json_lines()[0])
+    for raw in ("null", "[]", "42", '"text"', "[1, 2]"):
+        ev = parse_idmef_record(dict(rec, Note=raw))
+        assert isinstance(ev, SlipsEvidence), raw
+        assert ev.evidence_type == "" and ev.uids == [] and ev.timewindow is None
+        assert ev.source_ip == "10.0.0.23"  # structured IDMEF fields are still read
+    inc = json.loads(sample_alerts_json_lines()[-1])
+    parsed_inc = parse_idmef_record(dict(inc, Note="null"))
+    assert isinstance(parsed_inc, SlipsIncident) and parsed_inc.accumulated_threat_level is None and parsed_inc.timewindow is None
+
+
+def test_aggregate_preserves_missing_measurements(tmp_path):
+    idx = _tsv_index(tmp_path, [
+        "1.0\tA\t10.0.0.5\t40000\t203.0.113.9\t443\ttcp\t2.0\t100\t200\t3\t4\tSF",
+        "2.0\tB\t10.0.0.5\t40001\t203.0.113.9\t443\ttcp\t-\t-\t-\t1\t0\tS0",
+        "3.0\tC\t10.0.0.5\t40002\t203.0.113.9\t8443\ttcp\t1.0\t50\t-\t2\t2\tSF",
+    ])
+    agg = idx.aggregate(["A", "B", "C"], host="10.0.0.5")
+    assert agg["bytes_out"] is None  # B has no orig_bytes
+    assert agg["bytes_in"] is None  # B and C have no resp_bytes
+    assert agg["duration_s"] is None  # B has no duration
+    assert agg["pkts_out"] == 6 and agg["pkts_in"] == 6  # every row has packet counts
+    assert agg["mean_iat_ms"] == pytest.approx(1000.0)  # every row has ts
+    assert agg["conn_failures"] == 1 and agg["short_window_conns"] == 3 and agg["distinct_dst_ports"] == 2
+    single = idx.aggregate(["B"])
+    assert single["mean_iat_ms"] is None and single["pkts_out"] == 1 and single["duration_s"] is None
+    # through the adapter the FlowRecord carries the gaps, so the internal normality model is never fed fabricated zeros
+    line = _event_with(sample_alerts_json_lines()[0], uids=["A", "B", "C"], source_ip="10.0.0.5")
+    (case,) = SlipsAdapter("t", idx).build_cases(parse_alerts_json([line]))
+    assert case.flow.pkts_out == 6 and case.flow.bytes_out is None and case.flow.duration_s is None
+    assert not case.flow.has_required_fields()
+
+
+def test_aggregate_orients_rows_to_the_case_host(tmp_path):
+    idx = _tsv_index(tmp_path, [
+        # 10.0.0.5 initiated this one: orig_* already is the host's own direction
+        "1.0\tOUT\t10.0.0.5\t40000\t203.0.113.9\t443\ttcp\t2.0\t100\t200\t3\t4\tSF",
+        # 198.51.100.7 connected *to* 10.0.0.5:22 - the host is id.resp_h, so what it sent is resp_bytes
+        "2.0\tIN\t198.51.100.7\t51000\t10.0.0.5\t22\ttcp\t5.0\t1000\t7000\t10\t20\tSF",
+    ])
+    as_host = idx.aggregate(["OUT", "IN"], host="10.0.0.5")
+    assert as_host["bytes_out"] == 100 + 7000 and as_host["bytes_in"] == 200 + 1000
+    assert as_host["pkts_out"] == 3 + 20 and as_host["pkts_in"] == 4 + 10
+    assert as_host["distinct_dst_ports"] == 2  # peer ports: 443 and the inbound peer's 51000
+    inbound_only = idx.aggregate(["IN"], host="10.0.0.5")
+    assert inbound_only["bytes_out"] == 7000 and inbound_only["bytes_in"] == 1000
+    zeek_view = idx.aggregate(["OUT", "IN"])  # no host given: Zeek originator view
+    assert zeek_view["bytes_out"] == 1100 and zeek_view["bytes_in"] == 7200
+    assert idx.aggregate(["IN"], host="10.9.9.9")["bytes_out"] == 1000  # host on neither end: originator view
+    # build_flow passes the case host, so a case about the responder sees its own direction
+    line = _event_with(sample_alerts_json_lines()[0], uids=["IN"], source_ip="10.0.0.5")
+    (case,) = SlipsAdapter("t", idx).build_cases(parse_alerts_json([line]))
+    assert case.flow.src_host == "10.0.0.5" and case.flow.bytes_out == 7000 and case.flow.bytes_in == 1000
+
+
+def test_qualifying_evidence_is_not_suppressed_by_a_higher_confidence_weak_one():
+    lines = sample_alerts_json_lines()
+    c2 = lines[0]  # COMMAND_AND_CONTROL_CHANNEL, confidence 0.9, threat_level high (0.8)
+    weak_ti = _event_with(lines[1], threat_level="low")  # confidence 1.0 but weight 0.2 < min_threat_weight
+    (case,) = SlipsAdapter("t").build_cases(parse_alerts_json([c2, weak_ti]))
+    assert case.known.label == "c2" and case.known.score == pytest.approx(0.9)
+    assert not case.known.rejected and case.known.technique == "T1071"
+    # when nothing qualifies the strongest candidate is still named, but the branch is rejected
+    (strict,) = SlipsAdapter("t", tau_k=0.95).build_cases(parse_alerts_json([c2, weak_ti]))
+    assert strict.known.rejected and strict.known.label == "threat_intel"
 
 
 def test_adapter_groups_by_profile_and_timewindow_and_builds_branches():

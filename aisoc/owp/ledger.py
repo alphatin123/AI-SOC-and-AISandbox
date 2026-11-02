@@ -126,6 +126,7 @@ class HashChainLedger:
         self.clock = clock
         self.witness = witness
         self.entries: List[LedgerEntry] = []
+        self.last_checkpoint_length: Optional[int] = None
         self._lock = threading.Lock()
 
     # ── 【老師註解】HashChainLedger.append ────────────────────────
@@ -151,7 +152,8 @@ class HashChainLedger:
     # ── 【老師註解】HashChainLedger.checkpoint ────────────────────
     # 做什麼：拍一張「帳本快照」：目前長度、最後一環哈希、Merkle 根、時間；用 ledger 角色鑰匙簽名後交給外部見證。
     # 為什麼：簽名證明「帳本方當時承認帳本長這樣」；交給外部見證證明「之後沒改過」。兩者缺一不可。
-    # 怎麼看：soc.py 在每個案件結束時呼叫一次，所以 simulate 的 23 個案件 ⇒ 23 個 checkpoints。
+    # 怎麼看：soc.py 在每個「有調查」的案件結束時呼叫一次，匯出前再由 AISOC.seal() 補最後一個（若帳本尾端還沒被見證）；
+    #         last_checkpoint_length 記住上一次快照的長度，seal() 用它判斷要不要補。
     # 對應：準則 #7；測試 tests/test_ledger_verifier.py::test_truncation_and_fork_detected
     def checkpoint(self) -> Dict[str, Any]:
         with self._lock:
@@ -165,7 +167,12 @@ class HashChainLedger:
             cp = {"payload": payload, "signatures": [self.signer.sign_payload(payload)]}
             if self.witness is not None:
                 self.witness.publish(cp)
+            self.last_checkpoint_length = len(self.entries)
             return cp
+
+    def head_is_witnessed(self) -> bool:
+        """True when the most recent checkpoint already covers every entry."""
+        return self.last_checkpoint_length == len(self.entries)
 
     # ── 【老師註解】HashChainLedger.verify_chain ──────────────────
     # 做什麼：從 GENESIS 開始逐環重算：index 連號？prev_hash 等於上一環的 entry_hash？entry_hash 等於重算值？

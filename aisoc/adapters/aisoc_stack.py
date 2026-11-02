@@ -108,6 +108,9 @@ class HttpClient(Protocol):
 # 做什麼：HttpClient 的真實實作，只用標準函式庫 urllib（不引入第三方依賴）。
 # 怎麼看：HTTP 4xx／5xx 在 urllib 會變成例外；這裡把它「接住並轉回 (狀態碼, 內容)」，讓上層 _call 用統一方式判斷 status >= 400。
 #         回應若不是 JSON，就把原文放進 {"detail": ...}，錯誤訊息才不會遺失。
+#         連線被拒、DNS 解析失敗、socket 逾時（URLError／OSError 家族）則轉成 AiSOCError——
+#         這樣審批橋接器「只捕捉 AiSOCError」就足以把真正的斷線變成簽名拒絕，而不是讓整批 ingestion 崩掉。
+# 對應：準則 #2；測試 tests/test_aisoc_stack.py::test_transport_exceptions_become_aisoc_error
 class UrllibHttpClient:
     def __init__(self, timeout_s: float = 10.0) -> None:
         self.timeout_s = timeout_s
@@ -120,13 +123,18 @@ class UrllibHttpClient:
         try:
             with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:  # noqa: S310 (operator-configured URL)
                 raw = resp.read()
-                return resp.status, (json.loads(raw) if raw else {})
+                try:
+                    return resp.status, (json.loads(raw) if raw else {})
+                except ValueError as exc:
+                    raise AiSOCError(f"{method} {url}: non-JSON response body") from exc
         except urllib.error.HTTPError as exc:
             raw = exc.read()
             try:
                 return exc.code, (json.loads(raw) if raw else {})
             except ValueError:
                 return exc.code, {"detail": raw.decode("utf-8", "replace")}
+        except OSError as exc:  # URLError, ConnectionRefusedError, socket.timeout, gaierror ...
+            raise AiSOCError(f"{method} {url}: transport failure: {exc}") from exc
 
 
 # ── 【老師註解】AiSOCConfig ───────────────────────────────────────
@@ -177,11 +185,17 @@ class AiSOCClient:
     # ── 【老師註解】AiSOCClient._call ──────────────────────────────
     # 做什麼：所有 API 呼叫的共同底層：組完整 URL、把 body 以 sort_keys 序列化、送出、狀態碼 ≥ 400 就拋 AiSOCError。
     # 怎麼看：path_or_url 可以是相對路徑（接在 base_url 後）或完整 URL（串流 ingest 在另一個埠）；**hdr 會原樣傳給 headers()。
+    #         任何注入的 HttpClient 若漏出 OSError（連線拒絕、逾時、DNS）也在這裡統一轉成 AiSOCError——呼叫端只需接一種例外。
     # 拿掉會怎樣：每個方法各自處理錯誤，就會有某個路徑忘了檢查狀態碼，把 401 的錯誤 JSON 當成成功結果往下傳。
     def _call(self, method: str, path_or_url: str, body: Optional[Dict[str, Any]] = None, **hdr: Any) -> Dict[str, Any]:
         url = path_or_url if path_or_url.startswith("http") else f"{self.config.base_url.rstrip('/')}{path_or_url}"
         data = json.dumps(body, sort_keys=True).encode("utf-8") if body is not None else None
-        status, payload = self.http.request(method, url, self.config.headers(**hdr), data)
+        try:
+            status, payload = self.http.request(method, url, self.config.headers(**hdr), data)
+        except AiSOCError:
+            raise
+        except OSError as exc:
+            raise AiSOCError(f"{method} {url}: transport failure: {exc}") from exc
         # 任何 4xx／5xx 一律轉成例外，呼叫端只需 try/except AiSOCError
         if status >= 400:
             raise AiSOCError(f"{method} {url} -> {status}: {payload.get('detail', payload)}")
@@ -406,18 +420,22 @@ class AiSOCApprovalBridge:
     # ── 【老師註解】AiSOCApprovalBridge.__call__ ───────────────────
     # 做什麼：一次完整的審批流程：建單 → 輪詢等決定 → 核對回顯的 request_digest → 檢查到期 → 簽成 HumanApproval。
     # 為什麼：這是「保留動作必須人簽」在外部系統上的落實；每一條出路都要產出「有簽名」的結果，沒有「不知道」。
-    # 怎麼看：六條出路，只有最後一條可能是批准——
-    #         ① 建單失敗（網路／401）→ 簽名拒絕「approval inbox unavailable」；
+    # 怎麼看：七條出路，只有最後一條可能是批准——
+    #         ① 建單失敗（網路／401／連線被拒）→ 簽名拒絕「approval inbox unavailable」；
     #         ② 等到逾時還是 pending → 簽名拒絕「no decision before timeout」；
+    #         ②' 決定「在逾時之後」才被輪詢到 → 簽名拒絕「decision received after timeout」（逾時是硬界線，不因為後來有人按了就補收）；
     #         ③ 輪詢途中出錯 → 簽名拒絕「approval poll failed」；
-    #         ④ AiSOC 回傳的 action.request_digest 和我們送出的不同 → 簽名拒絕「about a different request」（防止拿別張批准單來用）；
+    #         ④ AiSOC 回傳的 action 不是物件、或沒有 request_digest、或和我們送出的不同 → 簽名拒絕
+    #            （「沒回顯」和「回顯錯的」一樣都拒：少了這個綁定，_sign 就會把一張不知道在講哪個請求的單據綁到當前請求上）；
     #         ⑤ 審批單已過期（取本地 TTL 與 AiSOC expires_at 較早者）→ 簽名拒絕「expired before use」；
     #         ⑥ 狀態在 APPROVED → 簽名批准；在 DENIED → 簽名拒絕；approver_id 都是 "aisoc:<決定者>"。
-    #         注意 ④ 容忍 request_digest 為 None（AiSOC 可能不回顯 action）；若真實 AiSOC 不回顯，這道檢查就不生效——這是寬鬆解析的代價。
-    # 拿掉會怎樣：若逾時回傳未簽名的 None，下游可能把「沒人回答」誤當成「沒人反對」；若不核對回顯摘要，
-    #         一張對無害動作的批准可能被貼到高風險請求上。
+    #         部署前提：AiSOC 必須原樣回顯 action 物件（它的 API 是這樣設計的）；若某個版本不回顯，所有審批都會被拒——
+    #         這是 fail-closed 的刻意選擇，不是 bug。
+    # 拿掉會怎樣：若逾時回傳未簽名的 None，下游可能把「沒人回答」誤當成「沒人反對」；若不要求回顯摘要，
+    #         一張對無害動作的批准（或任何 action 為空的紀錄）可能被貼到高風險請求上。
     # 對應：準則 #2、#4、#6；測試 tests/test_aisoc_stack.py::test_bridge_denied_or_undecided_is_signed_reject、
     #       ::test_bridge_transport_failure_fails_closed、::test_bridge_rejects_record_about_a_different_request、
+    #       ::test_bridge_rejects_record_without_request_digest、::test_bridge_rejects_decision_received_after_timeout、
     #       ::test_bridge_expired_aisoc_record_is_rejected
     def __call__(self, view: ApprovalView, req: ActionRequest, order: WorkOrder, pd: PolicyDecision) -> Signed:
         cfg = self.client.config
@@ -453,10 +471,12 @@ class AiSOCApprovalBridge:
         ext["approval_id"] = approval_id
         deadline = self._wait_clock() + cfg.approval_timeout_s
         record = created
-        # 輪詢：直到狀態落在 APPROVED／DENIED，或逾時（出路 ②），或查詢出錯（出路 ③）
+        # 輪詢：直到狀態落在 APPROVED／DENIED 且仍在期限內（出路 ②'），或逾時（出路 ②），或查詢出錯（出路 ③）
         while True:
             status = str(record.get("status", "")).lower()
             if status in APPROVED or status in DENIED:
+                if self._wait_clock() > deadline:
+                    return self._sign(req, order, pd, False, f"{self.approver_prefix}:bridge", "decision received after timeout", ext, utc_iso(local_exp))
                 break
             if self._wait_clock() >= deadline:
                 return self._sign(req, order, pd, False, f"{self.approver_prefix}:bridge", "no decision before timeout", ext, utc_iso(local_exp))
@@ -468,10 +488,13 @@ class AiSOCApprovalBridge:
 
         ext.update({"status": record.get("status"), "decided_by_id": record.get("decided_by_id"),
                     "decided_at": record.get("decided_at"), "comment": record.get("decision_comment")})
-        # The decision must be about *this* request: AiSOC echoes the action object back.
-        # 出路 ④：回顯的 request_digest 若存在且不等於我們送出的 → 這張單不是在講這個請求
-        echoed = record.get("action") or {}
-        if echoed.get("request_digest") not in (None, req.digest()):
+        # The decision must be about *this* request: AiSOC echoes the action object back, and the
+        # echo must carry exactly our request_digest. A missing or malformed echo is a reject, not a pass.
+        # 出路 ④：action 不是物件／沒有 request_digest → 拒絕；有但不等於我們送出的 → 拒絕
+        echoed = record.get("action")
+        if not isinstance(echoed, dict) or not isinstance(echoed.get("request_digest"), str):
+            return self._sign(req, order, pd, False, f"{self.approver_prefix}:bridge", "approval record does not echo a request_digest binding", ext, utc_iso(local_exp))
+        if echoed["request_digest"] != req.digest():
             return self._sign(req, order, pd, False, f"{self.approver_prefix}:bridge", "approval record is about a different request", ext, utc_iso(local_exp))
         # 出路 ⑤：到期時間取「本地 TTL」與「AiSOC 回傳 expires_at」較早者；已過期就拒絕
         exp = local_exp
@@ -633,7 +656,7 @@ def anchor_aisoc_bundle(soc: AISOC, bundle: Dict[str, Any], case_id: str, signin
 # 怎麼看：它是依 AiSOC 的 OpenAPI 文件寫的「測試替身」，不是 AiSOC 本體，也不保證和真實產品行為一致（特別是狀態字串）。
 #         和真伺服器一樣的地方刻意保留：沒帶正確 token 回 401；已決定的審批單不能翻案（409）；同一 Idempotency-Key 回同一個結果。
 #         測試會把 fake.request 換成「竄改回應」的版本，來模擬回顯錯誤的 request_digest 或已過期的 expires_at。
-# 拿掉會怎樣：審批橋接器的六條出路就只能靠真實 AiSOC 手動測，等於沒有回歸測試。
+# 拿掉會怎樣：審批橋接器的七條出路就只能靠真實 AiSOC 手動測，等於沒有回歸測試。
 # 對應：準則 #13；測試 tests/test_aisoc_stack.py::test_fake_server_refuses_flipping_a_decision、::test_bridge_transport_failure_fails_closed
 class FakeAiSOCServer:
     """In-memory stand-in for the AiSOC API, driven through :class:`HttpClient`.

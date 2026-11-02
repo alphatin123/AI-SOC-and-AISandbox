@@ -26,7 +26,7 @@ AiSOC is described in [`docs/INTEGRATION.md`](docs/INTEGRATION.md).
 
 ```bash
 pip install -r requirements.txt
-python -m pytest -q                                   # 85 tests
+python -m pytest -q                                   # 101 tests
 python -m aisoc simulate --out demo-output/aisoc-run  # train, run SOC, scenarios, ablations
 python -m aisoc verify demo-output/aisoc-run          # offline re-verification of the exported run
 
