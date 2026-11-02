@@ -17,6 +17,11 @@ The orchestrator is `aisoc/soc.py`. Design mapping and limitations are in
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md); running against Slips and
 AiSOC is described in [`docs/INTEGRATION.md`](docs/INTEGRATION.md).
 
+**新手請先讀** [`docs/GUIDE.zh-TW.md`](docs/GUIDE.zh-TW.md)（繁體中文老師版指南：
+核心概念、十三條準則對照程式碼與測試、逐步重現與預期輸出、「動手破壞它」練習、
+程式碼閱讀路線）。程式碼中每個重要函數上方都有 `【老師註解】` 區塊；
+`grep -rn "老師註解" aisoc/` 可列出全部。
+
 ## Quick start
 
 ```bash
