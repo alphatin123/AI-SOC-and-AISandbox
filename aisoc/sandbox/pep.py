@@ -24,6 +24,11 @@ from .agent import ACTION_ADD_WATCHLIST, ACTION_BLOCK_HOST, ACTION_EGRESS_CONNEC
 from .tools import ToolSideLog
 
 
+# ── 【老師註解】PEPConfig ─────────────────────────────────────────
+# 做什麼：PEP 八道檢查的開關。全部預設 True。
+# 為什麼：只為了「消融實驗」存在——把某一道關掉，證明對應的攻擊（重放、無審批執行…）會重新成功。
+# 判讀要點：正式部署任何一個 False 都是重大缺陷；看到有人改這裡就要問為什麼。
+# 對應：準則 #5、#13；測試 tests/test_policy_pep.py::test_ablation_flag_restores_replay
 @dataclass
 class PEPConfig:
     verify_signature: bool = True
@@ -36,6 +41,12 @@ class PEPConfig:
     egress_default_deny: bool = True
 
 
+# ── 【老師註解】NonceStore ────────────────────────────────────────
+# 做什麼：記錄「已用過的 nonce」。consume() 在鎖裡做「查 + 記」兩個動作，所以同一個 nonce 只有第一次會回 True。
+# 為什麼：授權信封是一張「一次性門票」。沒有這個紀錄，同一張有效信封可以被重複送進來執行十次（重放攻擊）。
+# 怎麼看：threading.Lock 讓「檢查」與「加入」是原子的；否則兩個執行緒同時檢查都沒用過，就會同時放行。
+# 誠實提醒：這裡是單機記憶體；多副本部署必須改用共享儲存（Redis／DB 的原子操作），否則各副本各自記帳形同沒記。
+# 對應：準則 #6；測試 tests/test_policy_pep.py::test_pep_happy_path_then_replay_and_tamper
 class NonceStore:
     """Atomic consume. Multi-replica deployments must back this with a shared store."""
 
@@ -51,6 +62,11 @@ class NonceStore:
             return True
 
 
+# ── 【老師註解】RevocationList ────────────────────────────────────
+# 做什麼：撤銷名單，可以撤「一張票（nonce）」、「整個案件」或「某把簽名鑰匙簽的全部」。
+# 為什麼：授權有 5 分鐘時效，但 5 分鐘內若發現 Agent 被攻陷或鑰匙外洩，不能乾等它過期——要能立刻作廢。
+# 怎麼看：revoke_signer 對應「私鑰被盜怎麼辦」——把那把鑰匙的 key_id 丟進來，它簽過的所有信封瞬間失效。
+# 對應：準則 #6；測試 tests/test_policy_pep.py::test_pep_rejects_untrusted_signer_and_expiry_and_revocation
 class RevocationList:
     def __init__(self) -> None:
         self._nonces: Set[str] = set()
@@ -82,6 +98,13 @@ class ExecutionOutcome:
     side_effect: Optional[Dict[str, Any]] = None
 
 
+# ── 【老師註解】BoundedExecutor ───────────────────────────────────
+# 做什麼：模擬的「執行器」：真正動手封鎖、加監控名單、打標籤、放行一條出站連線。每種動作的副作用都是明確、有界的。
+# 為什麼：它有自己的鑰匙（executor 角色），簽的收據和授權者的鑰匙無關——所以「授權方」和「執行方」各有一份獨立證據，
+#         驗證器才能拿兩份互相對賬。
+# 怎麼看：egress_default_deny=True 時，出站白名單「只來自授權信封裡的目的地」；沒有信封就沒有任何可達的地方。
+#         在真實部署，這一層對應防火牆 API／EDR／出站網關。
+# 對應：準則 #5、#9；測試 tests/test_end_to_end.py::test_happy_path_is_fully_recorded_and_verified
 @dataclass
 class BoundedExecutor:
     """Simulated effectors. Each action has an explicit, bounded side effect."""
@@ -117,6 +140,13 @@ class BoundedExecutor:
         raise ValueError(f"executor has no effector for {a}")
 
 
+# ── 【老師註解】PolicyEnforcementPoint ────────────────────────────
+# 做什麼：「策略執行點」——所有動作在真正執行前的最後一道、也是唯一一道閘門。拿到 (請求, 授權信封) 後依固定順序檢查，
+#         全過才叫 executor 動手，並且不論結果如何都簽一張收據留底。
+# 為什麼：前面的政策、人簽、簽名器都可能被繞過（例如有人直接拿一張信封來）；PEP 不信任任何上游，自己重驗一遍。
+# 怎麼看：rejections 清單記錄每次拒絕的原因，情境測試用它證明攻擊「在哪一關」被擋下。
+# 拿掉會怎樣：等於沒有門——有信封（哪怕過期、重放、改過參數）就執行。
+# 對應：準則 #5；測試 tests/test_policy_pep.py::test_pep_happy_path_then_replay_and_tamper
 class PolicyEnforcementPoint:
     def __init__(
         self,
@@ -137,11 +167,20 @@ class PolicyEnforcementPoint:
         self._idem: Dict[str, Signed] = {}
         self.rejections: List[Dict[str, str]] = []
 
+    # ── 【老師註解】PolicyEnforcementPoint.execute ────────────────
+    # 做什麼：八道檢查，順序固定、不可重排：
+    #   ① 簽名（必須是 authorizer 角色）② 綁定（request/params/action/resource/tenant/destination 全部對得上）
+    #   ③ 時效 ④ 撤銷 ⑤ 高影響必須帶 approval_digest ⑥ 冪等（同 idempotency_key ⇒ 回舊收據、不重做）
+    #   ⑦ 單次 nonce（原子消耗）⑧ 受限執行 → 簽收據
+    # 為什麼這個順序：便宜且能排除最多攻擊的檢查放前面；nonce 消耗放在「所有檢查都過」之後，否則一張會被拒的票
+    #         也會把 nonce 燒掉。冪等放在 nonce 之前，重送同一請求會拿回原收據而不是被當成重放。
+    # 對應：準則 #5、#6；測試 tests/test_policy_pep.py::test_pep_requires_approval_digest_for_high_impact
     def execute(self, request: ActionRequest, authorization: Signed) -> ExecutionOutcome:
         env = authorization.payload
         c = self.config
 
         def reject(reason: str) -> ExecutionOutcome:
+            # 每次拒絕也簽一張 "rejected" 收據——拒絕本身也是要留底的事件
             self.rejections.append({"case_id": request.case_id, "request_id": request.request_id, "reason": reason})
             receipt = self._receipt(request, env, "rejected", reason)
             return ExecutionOutcome(False, reason, receipt)
@@ -149,8 +188,9 @@ class PolicyEnforcementPoint:
         if c.verify_signature and not any(
             self.trusted.verify(env, s, expected_role="authorizer") for s in authorization.signatures
         ):
-            return reject("authorization signature invalid or signer not trusted as authorizer")
+            return reject("authorization signature invalid or signer not trusted as authorizer")  # 檢查 ①
         if c.verify_binding:
+            # 檢查 ②：信封必須和「現在送來的這個請求」逐欄吻合；改參數、換目標、換租戶都會在這裡被擋
             if env.get("request_digest") != request.digest():
                 return reject("envelope not bound to presented request")
             if env.get("params_digest") != digest(request.params):
@@ -160,19 +200,19 @@ class PolicyEnforcementPoint:
             if env.get("destination") != request.destination:
                 return reject("destination differs from authorized destination")
         if c.verify_expiry and parse_iso(env["expires_at"]) <= self.clock.now():
-            return reject("authorization expired")
+            return reject("authorization expired")  # 檢查 ③
         if c.verify_revocation and self.revocations.is_revoked(env):
-            return reject("authorization revoked")
+            return reject("authorization revoked")  # 檢查 ④
         if c.require_approval_for_high_impact and request.action in HIGH_IMPACT_ACTIONS and not env.get("approval_digest"):
-            return reject("high impact action lacks bound human approval")
+            return reject("high impact action lacks bound human approval")  # 檢查 ⑤
         if c.idempotency and request.idempotency_key in self._idem:
             prior = self._idem[request.idempotency_key]
-            return ExecutionOutcome(False, "idempotent replay: returning prior receipt, no new side effect", prior)
+            return ExecutionOutcome(False, "idempotent replay: returning prior receipt, no new side effect", prior)  # 檢查 ⑥
         if c.single_use_nonce and not self.nonces.consume(env["nonce"]):
-            return reject("nonce already consumed (replay)")
+            return reject("nonce already consumed (replay)")  # 檢查 ⑦：同一張票第二次進來
 
         try:
-            effect = self.executor.run(request, env, c.egress_default_deny)
+            effect = self.executor.run(request, env, c.egress_default_deny)  # 檢查 ⑧：受限執行
         except Exception as exc:
             return reject(f"executor error: {type(exc).__name__}: {exc}")
         receipt = self._receipt(request, env, "executed", str(effect))
@@ -180,6 +220,10 @@ class PolicyEnforcementPoint:
             self._idem[request.idempotency_key] = receipt
         return ExecutionOutcome(True, "executed", receipt, effect)
 
+    # ── 【老師註解】PolicyEnforcementPoint._receipt ───────────────
+    # 做什麼：產生一張 ActionReceipt（執行或拒絕都有），用 executor 鑰匙簽名，並且同時寫進獨立的 ToolSideLog。
+    # 為什麼：ToolSideLog 是「第二本帳」。帳本若被繞過，驗證器拿這裡的收據就能發現「有做卻沒記」（bypass）。
+    # 對應：準則 #7、#9；情境「execution that bypasses the ledger」
     def _receipt(self, request: ActionRequest, env: Dict[str, Any], outcome: str, detail: str) -> Signed:
         r = ActionReceipt(
             receipt_id=new_id("rcpt"),

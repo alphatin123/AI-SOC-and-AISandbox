@@ -19,6 +19,16 @@ from .agent import (
     InvestigationReport,
 )
 from .authorization import ApprovalView, AuthorizationError, AuthorizationSigner, HumanApprover, build_approval_view
+from .egress import (
+    ALLOWED_MESSAGE_TYPES,
+    MSG_ACTION_REQUEST,
+    MSG_INVESTIGATION_REPORT,
+    AuditUnavailable,
+    ControlledEgressProxy,
+    EgressConfig,
+    EgressResult,
+    FailingAudit,
+)
 from .pep import BoundedExecutor, ExecutionOutcome, NonceStore, PEPConfig, PolicyEnforcementPoint, RevocationList
 from .policy import POLICY_VERSION, PolicyEngine, RuntimeConstraints
 from .tools import ReadOnlyTools, TelemetryStore, ToolCallRecord, ToolError, ToolSideLog
