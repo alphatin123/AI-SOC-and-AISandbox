@@ -13,10 +13,11 @@ upstream OpenWorkProof schema.
 from __future__ import annotations
 
 import secrets
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Dict, List, Optional
 
 from ..canonical import digest
+from ..crypto import parse_iso
 
 SCHEMA_PREFIX = "owp-soc"
 
@@ -63,7 +64,38 @@ class CapabilityGrant(_Obj):
     usage_mode: str  # "single_use" | "bounded"
     issued_at: str
     expires_at: str
+    parent_grant_id: Optional[str] = None
     schema_version: str = schema("capability-grant")
+
+    def attenuate(
+        self,
+        allowed_actions: Optional[List[str]] = None,
+        resource_patterns: Optional[List[str]] = None,
+        max_uses: Optional[int] = None,
+        expires_at: Optional[str] = None,
+    ) -> "CapabilityGrant":
+        """Derive a child grant. Capabilities can only shrink; any attempt to widen raises."""
+        actions = list(allowed_actions) if allowed_actions is not None else list(self.allowed_actions)
+        if not set(actions) <= set(self.allowed_actions):
+            raise ValueError("attenuation cannot add actions")
+        patterns = list(resource_patterns) if resource_patterns is not None else list(self.resource_patterns)
+        if not set(patterns) <= set(self.resource_patterns):
+            raise ValueError("attenuation cannot add resource patterns")
+        uses = max_uses if max_uses is not None else self.max_uses
+        if uses > self.max_uses or uses < 0:
+            raise ValueError("attenuation cannot increase max_uses")
+        exp = expires_at if expires_at is not None else self.expires_at
+        if parse_iso(exp) > parse_iso(self.expires_at):
+            raise ValueError("attenuation cannot extend expiry")
+        return replace(
+            self,
+            grant_id=new_id("grant"),
+            allowed_actions=actions,
+            resource_patterns=patterns,
+            max_uses=uses,
+            expires_at=exp,
+            parent_grant_id=self.grant_id,
+        )
 
 
 @dataclass
@@ -113,6 +145,9 @@ class HumanApproval(_Obj):
     rationale: str
     issued_at: str
     expires_at: str
+    # Set when the decision was collected from an external system (e.g. an AiSOC
+    # approval inbox). Names the system and its record so the chain stays auditable.
+    external_ref: Optional[Dict[str, Any]] = None
     schema_version: str = schema("human-approval")
 
 
@@ -178,6 +213,26 @@ class AcceptanceDecision(_Obj):
     rationale: str
     accepted_at: str
     schema_version: str = schema("acceptance-decision")
+
+
+@dataclass
+class ExternalEvidenceRef(_Obj):
+    """Commitment to an artefact produced by another system (e.g. an AiSOC evidence bundle).
+
+    Only digests travel into the ledger. ``integrity_checked`` records which of the
+    foreign system's own integrity mechanisms this SOC verified before anchoring.
+    """
+
+    ref_id: str
+    case_id: str
+    system: str
+    kind: str
+    external_id: str
+    payload_sha256: str
+    artefact_digest: str
+    integrity_checked: Dict[str, Any]
+    anchored_at: str
+    schema_version: str = schema("external-evidence")
 
 
 @dataclass

@@ -106,3 +106,25 @@ class KnownModel:
             "lr": self.lr,
             "l2": self.l2,
         }
+
+    def to_params(self) -> Dict[str, object]:
+        """Complete, loadable parameter set (what a release manifest must pin)."""
+        d = self.to_dict()
+        d.update({"weights": self.weights, "bias": self.bias, "seed": self.seed})
+        return d
+
+    @classmethod
+    def from_params(cls, p: Dict[str, object]) -> "KnownModel":
+        if p.get("type") != "ovr_logistic_regression":
+            raise ValueError("unsupported known-model type")
+        return cls(
+            classes=list(p["classes"]),  # type: ignore[arg-type]
+            weights={k: [float(v) for v in ws] for k, ws in dict(p["weights"]).items()},  # type: ignore[arg-type]
+            bias={k: float(v) for k, v in dict(p["bias"]).items()},  # type: ignore[arg-type]
+            temperature=float(p["temperature"]),  # type: ignore[arg-type]
+            tau_k=float(p["tau_k"]),  # type: ignore[arg-type]
+            lr=float(p["lr"]),  # type: ignore[arg-type]
+            epochs=int(p["epochs"]),  # type: ignore[arg-type]
+            l2=float(p["l2"]),  # type: ignore[arg-type]
+            seed=int(p.get("seed", 7)),  # type: ignore[arg-type]
+        )

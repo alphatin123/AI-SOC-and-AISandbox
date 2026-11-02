@@ -106,3 +106,7 @@ class StandardScaler:
 
     def to_dict(self) -> Dict[str, List[float]]:
         return {"means": self.means, "stds": self.stds}
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, List[float]]) -> "StandardScaler":
+        return cls(means=[float(x) for x in d["means"]], stds=[float(x) for x in d["stds"]])

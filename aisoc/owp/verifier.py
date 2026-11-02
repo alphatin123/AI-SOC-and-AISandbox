@@ -45,11 +45,20 @@ class Verifier:
         entries = ledger.entries_for_case(case_id)
         auth_by_request: Dict[str, int] = {}
         exec_entries: Dict[str, int] = {}
+        egress_digests: Dict[str, int] = {}
         for e in entries:
             if e.entry_type == "authorization":
                 auth_by_request[e.refs.get("request_digest", "")] = e.index
             elif e.entry_type == "action_receipt":
                 exec_entries[e.object_digest] = e.index
+            elif e.entry_type == "agent_egress":
+                egress_digests.setdefault(e.refs.get("msg_digest", ""), e.index)
+            elif e.entry_type == "action_request":
+                # Complete mediation: a request the control plane acted on must have entered
+                # through the audited egress channel first (paper §VII).
+                seen = egress_digests.get(e.object_digest)
+                if seen is None or seen > e.index:
+                    findings.append(f"ledger entry {e.index}: action_request did not pass through the audited egress channel")
 
         receipts = [r for r in tool_receipts if r.payload.get("case_id") == case_id]
         for r in receipts:

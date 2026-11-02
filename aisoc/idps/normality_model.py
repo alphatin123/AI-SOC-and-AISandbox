@@ -117,6 +117,45 @@ class NormalityModel:
             "tau_a": self.tau_a,
         }
 
+    def to_params(self) -> Dict[str, object]:
+        """Complete, loadable parameter set including every tree."""
+        d = self.to_dict()
+        d.update({"seed": self.seed, "sample_n": self._sample_n, "trees": [_node_to_dict(t) for t in self.trees]})
+        return d
+
+    @classmethod
+    def from_params(cls, p: Dict[str, object]) -> "NormalityModel":
+        if p.get("type") != "isolation_forest":
+            raise ValueError("unsupported normality-model type")
+        m = cls(
+            n_trees=int(p["n_trees"]),  # type: ignore[arg-type]
+            sample_size=int(p["sample_size"]),  # type: ignore[arg-type]
+            seed=int(p.get("seed", 11)),  # type: ignore[arg-type]
+            quantile=float(p["quantile"]),  # type: ignore[arg-type]
+            tau_a={k: float(v) for k, v in dict(p["tau_a"]).items()},  # type: ignore[arg-type]
+        )
+        m._sample_n = int(p["sample_n"])  # type: ignore[arg-type]
+        m.trees = [_node_from_dict(t) for t in list(p["trees"])]  # type: ignore[arg-type]
+        return m
+
+
+def _node_to_dict(n: _Node) -> Dict[str, object]:
+    d: Dict[str, object] = {"size": n.size}
+    if n.left is not None and n.right is not None:
+        d.update({"feature": n.feature, "split": n.split, "left": _node_to_dict(n.left), "right": _node_to_dict(n.right)})
+    return d
+
+
+def _node_from_dict(d: Dict[str, object]) -> _Node:
+    n = _Node()
+    n.size = int(d["size"])  # type: ignore[arg-type]
+    if "left" in d:
+        n.feature = int(d["feature"])  # type: ignore[arg-type]
+        n.split = float(d["split"])  # type: ignore[arg-type]
+        n.left = _node_from_dict(d["left"])  # type: ignore[arg-type]
+        n.right = _node_from_dict(d["right"])  # type: ignore[arg-type]
+    return n
+
 
 def _quantile(values: Sequence[float], q: float) -> float:
     if not values:

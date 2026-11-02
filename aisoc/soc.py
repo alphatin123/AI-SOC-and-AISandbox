@@ -20,13 +20,16 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .canonical import digest
 from .crypto import Clock, Ed25519Signer, TrustedKeys, utc_iso
-from .idps import CaseDecision, CaseStatus, DualModel, FlowRecord
+from .idps import CaseDecision, CaseStatus, DualModel, ExternalAnomaly, ExternalKnown, FlowRecord, load_verified_model
 from .owp import (
     AcceptanceDecision,
+    ActionRequest,
     CapabilityGrant,
     EncryptedEvidenceStore,
+    ExternalEvidenceRef,
     ExternalWitness,
     HashChainLedger,
+    PolicyDecision,
     Signed,
     Verifier,
     WorkOrder,
@@ -37,10 +40,14 @@ from .sandbox import (
     ACTION_BLOCK_HOST,
     ACTION_EGRESS_CONNECT,
     ACTION_TAG_CASE,
+    MSG_ACTION_REQUEST,
+    MSG_INVESTIGATION_REPORT,
     ApprovalView,
     AuthorizationError,
     AuthorizationSigner,
     BoundedExecutor,
+    ControlledEgressProxy,
+    EgressConfig,
     HumanApprover,
     InvestigationAgent,
     PEPConfig,
@@ -54,6 +61,9 @@ from .sandbox import (
 )
 
 HumanPolicy = Callable[[ApprovalView], Tuple[bool, str]]
+# Produces a *signed* HumanApproval for a reserved request. The default wraps the local
+# HumanApprover; an external inbox (e.g. AiSOC approvals) can be plugged in instead.
+ApprovalProvider = Callable[[ApprovalView, ActionRequest, WorkOrder, PolicyDecision], Signed]
 
 
 def conservative_human(view: ApprovalView) -> Tuple[bool, str]:
@@ -91,6 +101,7 @@ class CaseResult:
     verification_status: Optional[str] = None
     verification_findings: List[str] = field(default_factory=list)
     acceptance_status: Optional[str] = None
+    egress_dropped: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -104,7 +115,24 @@ class CaseResult:
             "verification_status": self.verification_status,
             "verification_findings": self.verification_findings,
             "acceptance_status": self.acceptance_status,
+            "egress_dropped": self.egress_dropped,
         }
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "CaseResult":
+        return cls(
+            case_id=d["case_id"],
+            flow_id=d["flow_id"],
+            decision=CaseDecision.from_dict(d["decision"]),
+            investigated=bool(d.get("investigated", False)),
+            deduplicated=bool(d.get("deduplicated", False)),
+            report=d.get("report"),
+            requests=[RequestOutcome(**r) for r in d.get("requests", [])],
+            verification_status=d.get("verification_status"),
+            verification_findings=list(d.get("verification_findings", [])),
+            acceptance_status=d.get("acceptance_status"),
+            egress_dropped=list(d.get("egress_dropped", [])),
+        )
 
 
 class AISOC:
@@ -118,12 +146,16 @@ class AISOC:
         human_policy: HumanPolicy = conservative_human,
         runtime: Optional[RuntimeConstraints] = None,
         dedup_window_s: int = 300,
+        egress_config: Optional[EgressConfig] = None,
+        approval_provider: Optional[ApprovalProvider] = None,
+        model_manifest: Optional[Signed] = None,
     ) -> None:
         self.clock = clock or Clock()
         self.model = model
         self.agent = agent
         self.human_policy = human_policy
         self.dedup_window_s = dedup_window_s
+        self._approval_provider = approval_provider
 
         self.keys = {
             role: Ed25519Signer(role) for role in ("ledger", "authorizer", "executor", "verifier", "approver")
@@ -145,18 +177,64 @@ class AISOC:
         self.pep = PolicyEnforcementPoint(self.trusted, self.executor, self.tool_log, self.clock, pep_config)
         self.verifier = Verifier(self.keys["verifier"], self.trusted, self.clock)
 
+        # The sandbox's only channel out. Identity is bound to the channel, not claimed by the agent.
+        self.egress = ControlledEgressProxy(self.ledger, getattr(agent, "name", type(agent).__name__), self.clock, egress_config or EgressConfig())
+
         self._recent: Dict[Tuple[str, str, str], Any] = {}
         self.results: List[CaseResult] = []
         # Introspection hooks used by scenarios/tests; they expose no extra authority.
         self.last_order_grant: Optional[Tuple[WorkOrder, CapabilityGrant]] = None
         self.captured_authorizations: Dict[str, Tuple[Any, Signed]] = {}
 
+        if model_manifest is not None:
+            self.ledger.append("model_release", "-", {"status": "verified", "manifest": model_manifest.payload},
+                               {"model_version": model.model_version})
+        else:
+            self.ledger.append("model_release", "-", {"status": "unverified", "model_version": model.model_version})
+
+    @classmethod
+    def from_release(
+        cls,
+        model_bytes: bytes,
+        manifest: Signed,
+        release_trust: TrustedKeys,
+        agent: InvestigationAgent,
+        **kwargs: Any,
+    ) -> "AISOC":
+        """Construct a SOC whose model passed the signed release gate (fails closed otherwise)."""
+        model = load_verified_model(model_bytes, manifest, release_trust)
+        return cls(model, agent, model_manifest=manifest, **kwargs)
+
     # ------------------------------------------------------------------ pipeline
     def ingest(self, flow: FlowRecord) -> CaseResult:
+        """Detect with the internal dual_model and run the case."""
         self.telemetry.add_flow(flow)
         decision = self.model.decide(flow)
+        return self._run_case(flow, decision)
+
+    def ingest_external(
+        self,
+        flow: FlowRecord,
+        known: ExternalKnown,
+        anomaly: Optional[ExternalAnomaly] = None,
+        use_internal_normality: bool = False,
+        source_record: Optional[Dict[str, Any]] = None,
+    ) -> CaseResult:
+        """Run a case whose known branch comes from an external detector (e.g. Slips).
+
+        The external detector's raw record is committed to the ledger by digest so the
+        decision can later be tied to exactly what the detector emitted.
+        """
+        self.telemetry.add_flow(flow)
+        decision = self.model.decide_external(flow, known, anomaly, use_internal_normality)
+        refs = {"flow_id": flow.flow_id, "detector": known.source}
+        if source_record is not None:
+            refs["source_record_digest"] = digest(source_record)
+        return self._run_case(flow, decision, refs)
+
+    def _run_case(self, flow: FlowRecord, decision: CaseDecision, refs: Optional[Dict[str, str]] = None) -> CaseResult:
         case_id = new_id("case")
-        self.ledger.append("detection", case_id, decision.to_dict(), {"flow_id": flow.flow_id})
+        self.ledger.append("detection", case_id, decision.to_dict(), refs or {"flow_id": flow.flow_id})
         result = CaseResult(case_id=case_id, flow_id=flow.flow_id, decision=decision, investigated=False)
 
         if not decision.requires_agent_investigation:
@@ -175,12 +253,22 @@ class AISOC:
 
         order, grant = self._freeze_task(case_id, flow, decision)
         report = self.agent.investigate(order, decision, self.tools)
-        self.ledger.append("investigation_report", case_id, report.to_dict())
         result.investigated = True
-        result.report = report.to_dict()
 
-        for req in report.proposed_requests:
-            result.requests.append(self._handle_request(req, order, grant, report))
+        fwd = self.egress.forward(MSG_INVESTIGATION_REPORT, report.to_dict(), case_id)
+        if not fwd.ok:
+            # Fail closed: an un-audited report is as if the agent said nothing.
+            result.egress_dropped.append(f"{MSG_INVESTIGATION_REPORT}:{fwd.code}")
+        else:
+            self.ledger.append("investigation_report", case_id, report.to_dict(), {"agent_id": fwd.agent_id})
+            result.report = report.to_dict()
+            for req in report.proposed_requests:
+                f2 = self.egress.forward(MSG_ACTION_REQUEST, req.to_dict(), case_id)
+                if not f2.ok:
+                    result.egress_dropped.append(f"{MSG_ACTION_REQUEST}:{f2.code}")
+                    result.requests.append(RequestOutcome(req.request_id, req.action, req.tenant, "dropped_by_egress", None, False, False, f2.code))
+                    continue
+                result.requests.append(self._handle_request(req, order, grant, report))
 
         self.ledger.checkpoint()
         vd = self.verifier.verify_case(case_id, self.ledger, self.tool_log.receipts)
@@ -244,12 +332,11 @@ class AISOC:
         approval: Optional[Signed] = None
         if pd.status == "reserved":
             view = build_approval_view(req, report, pd)
-            approve, rationale = self.human_policy(view)
-            approval = self.approver.decide(req, order, pd, approve, rationale)
+            approval = self._approve(view, req, order, pd)
             self.ledger.append("human_approval", case_id, approval.payload, {"request_digest": pd.request_digest})
             out.human_decision = approval.payload["decision"]
-            if not approve:
-                out.reason = f"human rejected: {rationale}"
+            if approval.payload["decision"] != "approve":
+                out.reason = f"human rejected: {approval.payload['rationale']}"
                 return out
 
         try:
@@ -269,6 +356,22 @@ class AISOC:
         out.executed = outcome.executed
         out.reason = outcome.reason
         return out
+
+    def _approve(self, view: ApprovalView, req: ActionRequest, order: WorkOrder, pd: PolicyDecision) -> Signed:
+        if self._approval_provider is not None:
+            return self._approval_provider(view, req, order, pd)
+        approve, rationale = self.human_policy(view)
+        return self.approver.decide(req, order, pd, approve, rationale)
+
+    def set_approval_provider(self, provider: Optional[ApprovalProvider]) -> None:
+        """Route reserved actions to an external approval system (e.g. the AiSOC inbox bridge)."""
+        self._approval_provider = provider
+
+    def anchor_external_evidence(self, ref: ExternalEvidenceRef) -> Dict[str, Any]:
+        """Commit a foreign artefact's digest to the ledger and witness it immediately."""
+        self.ledger.append("external_evidence", ref.case_id, ref.to_dict(),
+                           {"system": ref.system, "external_id": ref.external_id, "payload_sha256": ref.payload_sha256})
+        return self.ledger.checkpoint()
 
     def _accept(self, case_id: str, vd: Signed) -> Signed:
         status = "ACCEPTED" if vd.payload["status"] == "VERIFIED" else ("DEFERRED" if vd.payload["status"] == "UNKNOWN" else "REJECTED")
