@@ -93,7 +93,7 @@ JCS 的規則：鍵按字典序排序、沒有多餘空白、數字用固定格�
 
 但攻擊者如果能改整條鏈（第 5 筆之後全部重算）呢？所以還需要：
 
-**Merkle 根 + 外部見證**：每個案件結束時，帳本把目前全部記錄算成一個 Merkle 根，用 `ledger` 鑰匙簽名，交給**帳本管理員管不到的**外部見證（準則 #7）。之後就算整條鏈被重寫，也對不上見證保存的根與長度 → 「truncated below witnessed length 464」。
+**Merkle 根 + 外部見證**：每個調查案件結束時，帳本把目前全部記錄算成一個 Merkle 根，用 `ledger` 鑰匙簽名，交給**帳本管理員管不到的**外部見證（準則 #7）；匯出前 `AISOC.seal()` 再補最後一個檢查點，讓見證長度 = 帳本長度（尾端只偵測不調查的案件也被保護）。之後就算整條鏈被重寫，也對不上見證保存的根與長度 → 「truncated below witnessed length 472」。
 
 **沒有見證時**，驗證器不會說「通過」，只會說 `UNKNOWN`（準則 #8）——因為它無法排除整條鏈被重寫的可能。
 
@@ -157,7 +157,7 @@ JCS 的規則：鍵按字典序排序、沒有多餘空白、數字用固定格�
 | 7 | 帳本只存指紋 + 哈希鏈 + Merkle + 外部見證 | `owp/ledger.py::HashChainLedger` | `test_ledger_verifier.py::test_modification_detected`、`test_truncation_and_fork_detected` |
 | 8 | 驗證器離線可跑；沒有見證 ⇒ UNKNOWN，不是通過 | `owp/verifier.py::Verifier.verify_case`、`cli.py` 的 `verify` | `test_ledger_verifier.py::test_verifier_unknown_without_witness` |
 | 9 | 一角色一鑰匙；驗簽連角色一起驗 | `crypto.py::TrustedKeys.verify` | `test_canonical_crypto.py::test_signature_roundtrip_and_role_check` |
-| 10 | 模型以簽名 + 哈希釘死，不符就拒載入 | `idps/release.py::load_verified_model`、`soc.py::AISOC.from_release` | `test_egress_release_grant.py::test_release_gate_accepts_only_exact_signed_artefact` |
+| 10 | 模型以簽名 + 哈希釘死，不符就拒載入；只有 `verify_release` 回傳的 `VerifiedRelease` 能讓帳本記成 verified | `idps/release.py::verify_release`、`soc.py::AISOC.from_release` | `test_egress_release_grant.py::test_release_gate_accepts_only_exact_signed_artefact`、`::test_soc_rejects_release_that_did_not_pass_the_gate` |
 | 11 | 日誌文字一律不可信（可能含注入）；缺資料 ⇒ UNKNOWN 不是正常 | `sandbox/untrusted.py::Untrusted`、`idps/dual_model.py::DualModel._unknown` | `test_policy_pep.py::test_injection_screen_flags_instructions`、`test_egress_release_grant.py::test_decide_external_combinations` |
 | 12 | 雙模型多路徑；已知低信心 ∧ 異常高 ⇒ 疑似零日 ⇒ 必須人審 | `idps/dual_model.py::DualModel._combine` | `test_dual_model.py::test_decision_table_covers_known_attack`、`test_missing_data_is_unknown_not_normal`、`test_leave_one_family_out_escalates_unseen_family_somewhere` |
 | 13 | 誠實範圍：合成資料、單一進程、確定性 Agent；數字不是安全認證 | `report.md` 開頭的免責聲明、`README.md` 的 Honest scope | — |
@@ -194,10 +194,10 @@ python -m pytest -q
 
 **預期輸出**（最後一行）：
 ```
-85 passed in ~9s
+101 passed in ~9s
 ```
 
-**怎麼判讀**：85 個測試涵蓋 §3 表中每一條準則。任何一個失敗都代表某條保證在你的環境不成立——**先停下來**。
+**怎麼判讀**：101 個測試涵蓋 §3 表中每一條準則。任何一個失敗都代表某條保證在你的環境不成立——**先停下來**。
 
 **出錯怎麼辦**：`ModuleNotFoundError: cryptography` → 沒裝依賴或沒啟用 venv。
 
@@ -285,7 +285,7 @@ python -m aisoc verify demo-output/aisoc-run
 {
   "status": "VERIFIED",
   "entries": 472,
-  "checkpoints": 23,
+  "checkpoints": 24,
   "receipts": 23,
   "problems": []
 }
@@ -293,7 +293,7 @@ python -m aisoc verify demo-output/aisoc-run
 
 **怎麼判讀**：
 - `entries: 472`：帳本 472 筆（200 偵測 + 23 個調查案件 × 11 類記錄 + 46 筆出口紀錄 + 1 模型發布 + 1 去重）。
-- `checkpoints: 23`：每個調查案件結束都做一次檢查點送見證，所以 = 案件數。
+- `checkpoints: 24`：每個調查案件結束都做一次檢查點送見證（23 個），匯出前再「封頂」一個，讓最後一個檢查點的長度 = 472 = 帳本長度——所以是案件數 + 1。
 - `receipts: 23`：執行器簽的收據，每一張都要能對到一筆 `authorization` 帳本記錄——對不到就是「繞過帳本執行」。
 - 驗證器做了什麼：重算哈希鏈 → 用 `trusted-keys.json` 裡 `ledger` 的公鑰驗每個檢查點簽名 → 比對 Merkle 根 → 驗每張收據的 `executor` 簽名 → 對賬收據 vs 授權 → 對賬動作請求 vs 出口紀錄。
 
@@ -332,7 +332,7 @@ training dual_model on synthetic data (only its release gate and thresholds are 
 ```bash
 python -m aisoc verify demo-output/slips-run
 ```
-預期：`"status": "VERIFIED", "entries": 50, "checkpoints": 4, "receipts": 4`。
+預期：`"status": "VERIFIED", "entries": 50, "checkpoints": 5, "receipts": 4`（4 個調查案件各一個檢查點 + 匯出前封頂 1 個）。
 
 ### 步驟 7：看會送去 AiSOC 的告警長什麼樣（不真的送）
 
@@ -468,7 +468,7 @@ EOF
 python -m aisoc verify /tmp/x; echo "exit=$?"
 ```
 ```json
-{"status": "FAILED", "entries": 472, "checkpoints": 23, "receipts": 23,
+{"status": "FAILED", "entries": 472, "checkpoints": 24, "receipts": 23,
  "problems": ["chain broken at 5"]}
 exit=1
 ```
@@ -487,10 +487,11 @@ python -m aisoc verify /tmp/y; echo "exit=$?"
 ```json
 {"status": "FAILED", "entries": 462, ...,
  "problems": ["truncated below witnessed length 464",
+              "truncated below witnessed length 472",
               "receipt rcpt-… executed without ledger authorization (bypass)"]}
 exit=1
 ```
-**為什麼抓得到**：哈希鏈本身對「刪尾巴」無感（鏈還是連續的），但外部見證記得「上次長度是 464」；同時有一張執行器收據找不到對應的授權記錄——**兩個獨立機制同時報警**。
+**為什麼抓得到**：哈希鏈本身對「刪尾巴」無感（鏈還是連續的），但外部見證記得「最後一個調查案件結束時長度是 464、匯出封頂時是 472」；同時有一張執行器收據找不到對應的授權記錄——**兩個獨立機制同時報警**。試試只刪最後 1 筆：若沒有匯出前的封頂檢查點，刪掉第 465～472 筆這段「檢查點之後的尾巴」是抓不到的。
 
 ### 練習 C：拿掉外部見證
 

@@ -20,7 +20,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .canonical import digest
 from .crypto import Clock, Ed25519Signer, TrustedKeys, utc_iso
-from .idps import CaseDecision, CaseStatus, DualModel, ExternalAnomaly, ExternalKnown, FlowRecord, load_verified_model
+from .idps import CaseDecision, CaseStatus, DualModel, ExternalAnomaly, ExternalKnown, FlowRecord, ModelReleaseError, VerifiedRelease, verify_release
 from .owp import (
     AcceptanceDecision,
     ActionRequest,
@@ -153,8 +153,11 @@ class CaseResult:
 # 為什麼：把所有元件在同一個地方接線，讀者才能一眼看到「資料從偵測到執行到驗證」的完整路徑，確認沒有旁路。
 # 怎麼看：self.keys 五把鑰匙各司其職（準則 #9）；model_release 鑰匙「不在」這裡——訓練域只交公鑰給 SOC。
 #         建構時第一筆帳本就是 model_release：記錄「這次用的模型有沒有通過簽名發布閘門」。
+#         要寫成 verified，呼叫端必須交出 verify_release() 回傳的 VerifiedRelease，而且它綁的要是「同一個」model 物件；
+#         交一張沒驗過的 Signed 清單、或拿別的模型的憑證來用，建構子直接丟 ModelReleaseError。
 # 誠實提醒：五個信任域在同一個 Python 進程裡；論文的保證需要它們在不同管理員手上（準則 #13）。
-# 對應：全部準則；測試 tests/test_end_to_end.py::test_happy_path_is_fully_recorded_and_verified
+# 對應：全部準則；測試 tests/test_end_to_end.py::test_happy_path_is_fully_recorded_and_verified、
+#       tests/test_egress_release_grant.py::test_soc_rejects_release_that_did_not_pass_the_gate
 class AISOC:
     def __init__(
         self,
@@ -168,8 +171,15 @@ class AISOC:
         dedup_window_s: int = 300,
         egress_config: Optional[EgressConfig] = None,
         approval_provider: Optional[ApprovalProvider] = None,
-        model_manifest: Optional[Signed] = None,
+        release: Optional[VerifiedRelease] = None,
     ) -> None:
+        # Only a VerifiedRelease produced by verify_release() may mark the model as verified,
+        # and it must be the handle for *this* model object, not a manifest that merely looks right.
+        if release is not None:
+            if not isinstance(release, VerifiedRelease):
+                raise ModelReleaseError("release must be a VerifiedRelease returned by verify_release(); a bare manifest is not proof of verification")
+            if release.model is not model:
+                raise ModelReleaseError("VerifiedRelease is bound to a different model object than the one being loaded")
         self.clock = clock or Clock()
         self.model = model
         self.agent = agent
@@ -206,16 +216,17 @@ class AISOC:
         self.last_order_grant: Optional[Tuple[WorkOrder, CapabilityGrant]] = None
         self.captured_authorizations: Dict[str, Tuple[Any, Signed]] = {}
 
-        if model_manifest is not None:
-            self.ledger.append("model_release", "-", {"status": "verified", "manifest": model_manifest.payload},
-                               {"model_version": model.model_version})
+        if release is not None:
+            self.ledger.append("model_release", "-", {"status": "verified", "manifest": release.manifest.payload},
+                               {"model_version": model.model_version, "model_sha256": release.model_sha256})
         else:
             self.ledger.append("model_release", "-", {"status": "unverified", "model_version": model.model_version})
 
     # ── 【老師註解】AISOC.from_release ────────────────────────────
-    # 做什麼：用「模型位元組 + 簽名發布清單 + 訓練域公鑰」建 SOC。load_verified_model 會驗哈希與 model_release 角色簽名，
-    #         不符就 raise——SOC 根本不會被建出來（fail-closed）。
+    # 做什麼：用「模型位元組 + 簽名發布清單 + 訓練域公鑰」建 SOC。verify_release 會驗哈希與 model_release 角色簽名，
+    #         不符就 raise——SOC 根本不會被建出來（fail-closed）；通過才拿到 VerifiedRelease 交給建構子。
     # 為什麼：模型是會被投毒、被替換的製品。沒有這道閘門，任何人把一個壞模型檔放到路徑上，SOC 就會照用。
+    # 怎麼看：這是唯一「正規」的 verified 入口；直接呼叫 AISOC(model, agent) 只會記成 unverified。
     # 對應：準則 #10；測試 tests/test_egress_release_grant.py::test_soc_from_release_records_verified_manifest_and_plain_init_records_unverified
     @classmethod
     def from_release(
@@ -227,8 +238,8 @@ class AISOC:
         **kwargs: Any,
     ) -> "AISOC":
         """Construct a SOC whose model passed the signed release gate (fails closed otherwise)."""
-        model = load_verified_model(model_bytes, manifest, release_trust)
-        return cls(model, agent, model_manifest=manifest, **kwargs)
+        verified = verify_release(model_bytes, manifest, release_trust)
+        return cls(verified.model, agent, release=verified, **kwargs)
 
     # ------------------------------------------------------------------ pipeline
     # ── 【老師註解】AISOC.ingest / ingest_external ────────────────
@@ -453,14 +464,30 @@ class AISOC:
         return Signed(payload=payload, signatures=[self.keys["approver"].sign_payload(payload)])
 
     # ------------------------------------------------------------------ export
+    # ── 【老師註解】AISOC.seal ────────────────────────────────────
+    # 做什麼：若帳本最後一環還沒被任何檢查點涵蓋，就打一個檢查點並交給外部見證；已涵蓋則什麼都不做。
+    # 為什麼：見證只保護「檢查點之前」的環；尾巴沒封住，截掉它們就查不出來。export 前一定先呼叫它。
+    # 對應：準則 #7；測試 tests/test_egress_release_grant.py::test_export_seals_trailing_entries_with_a_final_checkpoint
+    def seal(self) -> Optional[Dict[str, Any]]:
+        """Checkpoint the ledger head if it is not yet witnessed; returns the new checkpoint or None."""
+        if self.ledger.head_is_witnessed():
+            return None
+        return self.ledger.checkpoint()
+
     # ── 【老師註解】AISOC.export ──────────────────────────────────
-    # 做什麼：把可離線驗證所需的一切寫成 JSON：帳本、受信公鑰、工具側收據、工具呼叫、見證檢查點、案件結果、模型卡。
+    # 做什麼：先把帳本「封頂」（若最後一環還沒被見證，補一個檢查點），再把可離線驗證所需的一切寫成 JSON：
+    #         帳本、受信公鑰、工具側收據、工具呼叫、見證檢查點、案件結果、模型卡。
     # 為什麼：監管者／評審不需要接觸原始流量，也不需要跑 SOC；拿這幾個檔案 + `aisoc verify` 就能獨立驗證。
-    # 怎麼看：`python -m aisoc verify <dir>` 讀的就是這裡寫出的檔案。
-    # 對應：準則 #8；測試 tests/test_egress_release_grant.py::test_cli_slips_ingest_verify_bundle_and_push_dry_run
+    #         _run_case 只在「有調查」的案件結束時打檢查點；若最後幾個案件是只偵測／去重，它們的帳本環就落在
+    #         最後一個檢查點之後——verify_against_witness 只比對「見證過的前綴」，這些尾巴被截掉也不會被發現。
+    #         匯出前補一個檢查點，見證長度就等於帳本長度，整本帳都在保護之內。
+    # 怎麼看：`python -m aisoc verify <dir>` 讀的就是這裡寫出的檔案；若最後一個檢查點已經涵蓋全部環數就不會重複打。
+    # 對應：準則 #7、#8；測試 tests/test_egress_release_grant.py::test_export_seals_trailing_entries_with_a_final_checkpoint、
+    #       ::test_cli_slips_ingest_verify_bundle_and_push_dry_run
     def export(self, out_dir: Path) -> None:
         import json
 
+        self.seal()
         out_dir.mkdir(parents=True, exist_ok=True)
         self.ledger.export(out_dir / "ledger.json")
         (out_dir / "trusted-keys.json").write_text(json.dumps(self.trusted.export(), indent=2, sort_keys=True))

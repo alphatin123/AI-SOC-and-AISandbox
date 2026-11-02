@@ -262,14 +262,15 @@ def parse_idmef_record(rec: Dict[str, Any]) -> Union[SlipsEvidence, SlipsInciden
     # 步驟 1：必須是 dict，且 Version 以 "2" 開頭（IDMEFv2），否則直接回 None
     if not isinstance(rec, dict) or str(rec.get("Version", "")).split(".")[0] != "2":
         return None
-    # 步驟 2：Note 可能是 JSON 字串（Slips 實際寫法）或 dict；解不開就當空的，不丟整筆紀錄
+    # 步驟 2：Note 可能是 JSON 字串（Slips 實際寫法）或 dict；解不開、或解出來不是物件（null／陣列／數字），都當空的，不丟整筆紀錄
     note: Dict[str, Any] = {}
     raw_note = rec.get("Note")
     if isinstance(raw_note, str) and raw_note:
         try:
-            note = json.loads(raw_note)
+            decoded = json.loads(raw_note)
         except ValueError:
-            note = {}
+            decoded = None
+        note = decoded if isinstance(decoded, dict) else {}
     elif isinstance(raw_note, dict):
         note = raw_note
     # 步驟 3：Analyzer.Model 是 Slips 版本號，之後會記進 model_version 當來源證明
@@ -424,46 +425,88 @@ class ZeekConnIndex:
         return idx
 
     # ── 【老師註解】ZeekConnIndex._num ─────────────────────────────
-    # 做什麼：安全地把某一列的某欄轉成 float；None 或轉不了都回 0.0。
-    # 怎麼看：這個 0.0 只用在「加總」裡（有些列有值、有些沒有），不代表整組缺值——整組缺值由 aggregate() 回 None 處理。
+    # 做什麼：安全地把某一列的某欄轉成 float；Zeek 的無值（"-" 已在 load 轉成 None）或轉不了都回 None。
+    # 為什麼：缺值必須以「缺」的身分往上傳，不能偷偷變成 0.0——否則一列沒量到的位元組會讓整組看起來像「量到了 0」。
+    # 對應：準則 #11
     @staticmethod
-    def _num(row: Dict[str, Any], key: str) -> float:
+    def _num(row: Dict[str, Any], key: str) -> Optional[float]:
         v = row.get(key)
+        if v is None:
+            return None
         try:
-            return float(v) if v is not None else 0.0
+            return float(v)
         except (TypeError, ValueError):
-            return 0.0
+            return None
+
+    # ── 【老師註解】ZeekConnIndex._sum ─────────────────────────────
+    # 做什麼：把一串「可能缺值」的量加總；只要有任何一個是 None，結果就是 None。
+    # 為什麼：聚合值要能被 has_required_fields() 當成「完整量測」，前提是每一列都真的量到了；少一列就不算完整。
+    @staticmethod
+    def _sum(values: Iterable[Optional[float]]) -> Optional[float]:
+        total = 0.0
+        for v in values:
+            if v is None:
+                return None
+            total += v
+        return total
+
+    # ── 【老師註解】ZeekConnIndex._orient ──────────────────────────
+    # 做什麼：把一列 conn.log 轉成「以案件主機為視角」的 (送出位元組, 收到位元組, 送出封包, 收到封包, 對端埠)。
+    # 為什麼：Zeek 的 orig_*／resp_* 是以「連線發起者」為視角；但 Slips 也會對「被連線的目的 profile」發證據，
+    #         此時案件主機是 id.resp_h，它「送出」的其實是 resp_bytes。不轉向，流量方向與位元組比例特徵就會顛倒。
+    # 怎麼看：主機 == id.orig_h → 照原樣；主機 == id.resp_h → 對調；兩者皆非（NAT／未給主機）→ 退回 Zeek 原始視角。
+    # 對應：準則 #11；測試 tests/test_slips_adapter.py::test_aggregate_orients_rows_to_the_case_host
+    @classmethod
+    def _orient(cls, row: Dict[str, Any], host: Optional[str]) -> Tuple[Optional[float], Optional[float], Optional[float], Optional[float], Any]:
+        if host is not None and str(row.get("id.resp_h")) == host and str(row.get("id.orig_h")) != host:
+            return (cls._num(row, "resp_bytes"), cls._num(row, "orig_bytes"),
+                    cls._num(row, "resp_pkts"), cls._num(row, "orig_pkts"), row.get("id.orig_p"))
+        return (cls._num(row, "orig_bytes"), cls._num(row, "resp_bytes"),
+                cls._num(row, "orig_pkts"), cls._num(row, "resp_pkts"), row.get("id.resp_p"))
 
     # ── 【老師註解】ZeekConnIndex.aggregate ────────────────────────
-    # 做什麼：給一組 uid，把找得到的 conn.log 列加總成 FlowRecord 需要的量化欄位：進出位元組、封包、總時長、平均間隔、
-    #         失敗連線數、連線數、不同目的埠數。
+    # 做什麼：給一組 uid（與案件主機），把找得到的 conn.log 列加總成 FlowRecord 需要的量化欄位：進出位元組、封包、總時長、
+    #         平均間隔、失敗連線數、連線數、不同對端埠數。
     # 為什麼：Slips 一個時間窗裡可能有多條連線；FlowRecord 是「一個窗一筆」，所以要聚合。
-    # 怎麼看：第一行最重要——一個 uid 都找不到就回 None，呼叫端會讓所有量化欄位維持 None（缺值 ≠ 0）。
-    #         mean_iat_ms 有兩種算法：≥2 條連線用「首尾時間差 ÷ (n-1)」；只有 1 條就用「時長 ÷ (封包數-1)」近似。
-    #         conn_failures 數的是 Zeek conn_state 落在 S0／REJ／RSTOS0… 這些「沒握手成功」的狀態。
-    # 對應：準則 #11；測試 tests/test_slips_adapter.py::test_zeek_conn_index_json_and_tsv
-    def aggregate(self, uids: Sequence[str]) -> Optional[Dict[str, float]]:
+    # 怎麼看：三個「缺值不是零」的規則——
+    #         1) 一個 uid 都找不到 → 整個回 None，呼叫端讓所有量化欄位維持 None；
+    #         2) 找得到列，但某個量（位元組／封包／時長）有任何一列沒量到 → 「那個欄位」是 None，其餘欄位照常；
+    #            這樣 has_required_fields() 會是 False，--internal-normality 不會拿「編造的 0」去打分；
+    #         3) 計數類欄位（失敗數、連線數、對端埠數）數的是「列」，永遠有值。
+    #         方向以 host 為視角（見 _orient）。mean_iat_ms：≥2 條連線用「首尾時間差 ÷ (n-1)」；只有 1 條用「時長 ÷ (封包數-1)」近似，
+    #         後者任一輸入缺值就是 None。
+    # 拿掉會怎樣：缺值補 0 時，一列沒量到位元組的連線會讓整窗看起來像「幾乎沒流量」，常態模型給低分，異常被壓掉。
+    # 對應：準則 #11；測試 tests/test_slips_adapter.py::test_zeek_conn_index_json_and_tsv、::test_aggregate_preserves_missing_measurements
+    def aggregate(self, uids: Sequence[str], host: Optional[str] = None) -> Optional[Dict[str, Optional[float]]]:
         rows = [self.rows[u] for u in uids if u in self.rows]
-        # 完全對不到任何一列 → None（讓上層把欄位留空，不是填零）
+        # 規則 1：完全對不到任何一列 → None（讓上層把欄位留空，不是填零）
         if not rows:
             return None
-        ts = sorted(self._num(r, "ts") for r in rows)
-        pkts = sum(self._num(r, "orig_pkts") + self._num(r, "resp_pkts") for r in rows)
-        duration = sum(self._num(r, "duration") for r in rows)
-        if len(ts) >= 2:
+        oriented = [self._orient(r, host) for r in rows]
+        bytes_out = self._sum(o[0] for o in oriented)
+        bytes_in = self._sum(o[1] for o in oriented)
+        pkts_out = self._sum(o[2] for o in oriented)
+        pkts_in = self._sum(o[3] for o in oriented)
+        duration = self._sum(self._num(r, "duration") for r in rows)
+        ts_vals = [self._num(r, "ts") for r in rows]
+        ts = sorted(t for t in ts_vals if t is not None)
+        mean_iat_ms: Optional[float]
+        if len(ts) >= 2 and len(ts) == len(rows):
             mean_iat_ms = 1000.0 * (ts[-1] - ts[0]) / (len(ts) - 1)
+        elif len(rows) == 1 and duration is not None and pkts_out is not None and pkts_in is not None:
+            mean_iat_ms = 1000.0 * duration / max(pkts_out + pkts_in - 1.0, 1.0)
         else:
-            mean_iat_ms = 1000.0 * duration / max(pkts - 1.0, 1.0)
+            mean_iat_ms = None  # 規則 2：時間戳不齊或單列量測不全 → 缺值
         return {
-            "bytes_out": sum(self._num(r, "orig_bytes") for r in rows),
-            "bytes_in": sum(self._num(r, "resp_bytes") for r in rows),
-            "pkts_out": sum(self._num(r, "orig_pkts") for r in rows),
-            "pkts_in": sum(self._num(r, "resp_pkts") for r in rows),
+            "bytes_out": bytes_out,
+            "bytes_in": bytes_in,
+            "pkts_out": pkts_out,
+            "pkts_in": pkts_in,
             "duration_s": duration,
             "mean_iat_ms": mean_iat_ms,
             "conn_failures": float(sum(1 for r in rows if str(r.get("conn_state", "")) in _FAILED_CONN_STATES)),
             "short_window_conns": float(len(rows)),
-            "distinct_dst_ports": float(len({r.get("id.resp_p") for r in rows if r.get("id.resp_p") is not None})),
+            "distinct_dst_ports": float(len({o[4] for o in oriented if o[4] is not None})),
         }
 
 
@@ -513,11 +556,15 @@ class SlipsAdapter:
     # 為什麼：論文的已知分支要有「拒絕選項」（reject option）——不夠有把握就說「我不認得」，而不是硬給一個類別。
     # 怎麼看：三種結果——
     #         (a) 沒有任何可查表的證據 → 標籤 unclassified、rejected=True（弱指標不能單獨成案）；
-    #         (b) 有可查表證據，取（信心, 威脅權重）最高的一條；信心 < tau_k 或 威脅權重 < min_threat_weight → rejected=True；
-    #         (c) 否則接受，標籤就是那條證據的家族。技術若最佳證據沒有，退而取同組其他已映射證據的。
-    #         注意分數就是 Slips 的 Confidence 原值，不是校準過的機率（模組開頭已聲明）。
+    #         (b) 有可查表證據，但沒有任何一條「同時」過兩道門檻（信心 ≥ tau_k 且 威脅權重 ≥ min_threat_weight）→
+    #             取（信心, 威脅權重）最高的一條當標籤、rejected=True；
+    #         (c) 有至少一條同時過兩道門檻 → 在「合格的」裡面取最高的一條，接受，標籤就是它的家族。
+    #         先篩合格、再選最佳——順序反過來（先選最高信心再套門檻）會讓一條「信心 1.0 但等級 low」的 TI 證據
+    #         壓掉同窗一條「信心 0.9、等級 high」的 C2 證據，整個已知分支被拒絕，案子無故變成 UNKNOWN。
+    #         技術若最佳證據沒有，退而取同組其他已映射證據的。分數就是 Slips 的 Confidence 原值，不是校準過的機率（模組開頭已聲明）。
     # 拿掉會怎樣：沒有拒絕選項，一條 low 等級、信心 0.3 的 YOUNG_DOMAIN 也會被當成已知攻擊派 Agent 去查，誤報會淹沒人力。
-    # 對應：準則 #12；測試 tests/test_slips_adapter.py::test_low_confidence_mapped_evidence_is_rejected_by_tau
+    # 對應：準則 #12；測試 tests/test_slips_adapter.py::test_low_confidence_mapped_evidence_is_rejected_by_tau、
+    #       ::test_qualifying_evidence_is_not_suppressed_by_a_higher_confidence_weak_one
     def known_verdict(self, group: Sequence[SlipsEvidence]) -> ExternalKnown:
         mapped = [e for e in group if e.family is not None]
         ids = [e.id for e in group]
@@ -526,9 +573,10 @@ class SlipsAdapter:
             best_conf = max((e.confidence for e in group), default=0.0)
             modules = sorted({e.source_module for e in group if e.source_module})
             return ExternalKnown(UNCLASSIFIED, best_conf, True, f"{SLIPS_SOURCE}/{'+'.join(modules) or 'unknown'}", None, ids)
-        # (b)(c) 取最有把握的一條已映射證據，再套兩道門檻決定接受或拒絕
-        best = max(mapped, key=lambda e: (e.confidence, e.threat_level))
-        rejected = best.confidence < self.tau_k or best.threat_level < self.min_threat_weight
+        # (b)(c) 先套兩道門檻篩出合格證據，再在合格者中取最有把握的一條；沒有合格者才拒絕
+        qualifying = [e for e in mapped if e.confidence >= self.tau_k and e.threat_level >= self.min_threat_weight]
+        rejected = not qualifying
+        best = max(qualifying or mapped, key=lambda e: (e.confidence, e.threat_level))
         technique = best.technique or next((e.technique for e in mapped if e.technique), None)
         return ExternalKnown(
             label=best.family or UNCLASSIFIED,
@@ -575,10 +623,10 @@ class SlipsAdapter:
             "conn_failures": 0.0, "short_window_conns": float(len(group)),
             "distinct_dst_ports": float(len({e.dst_port for e in group if e.dst_port is not None})),
         }
-        # 有 conn.log 才嘗試補量化欄位；對不到任何 uid 時 agg 是 None，欄位維持 None
+        # 有 conn.log 才嘗試補量化欄位；對不到任何 uid 時 agg 是 None，欄位維持 None；方向以案件主機 src 為視角
         if self.conn_index is not None:
             uids = sorted({u for e in group for u in e.uids})
-            agg = self.conn_index.aggregate(uids)
+            agg = self.conn_index.aggregate(uids, host=src)
             if agg:
                 vol.update(agg)
         # Description 只在這裡出現：拼成不可信摘錄，之後由 Untrusted 包住，絕不解析

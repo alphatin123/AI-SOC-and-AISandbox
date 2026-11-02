@@ -4,7 +4,7 @@ from .dual_model import MODEL_FILE_SCHEMA, CaseDecision, CaseStatus, DualModel, 
 from .features import FEATURE_NAMES, FEATURE_SCHEMA_VERSION, FlowRecord, featurize
 from .known_model import BENIGN, KnownModel
 from .normality_model import NormalityModel
-from .release import MODEL_RELEASE_ROLE, ModelReleaseError, load_verified_model, release_model
+from .release import MODEL_RELEASE_ROLE, ModelReleaseError, VerifiedRelease, load_verified_model, release_model, verify_release
 
 __all__ = [
     "BENIGN",
@@ -21,7 +21,9 @@ __all__ = [
     "MODEL_RELEASE_ROLE",
     "ModelReleaseError",
     "NormalityModel",
+    "VerifiedRelease",
     "featurize",
     "load_verified_model",
     "release_model",
+    "verify_release",
 ]

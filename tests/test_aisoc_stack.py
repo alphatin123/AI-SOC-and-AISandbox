@@ -166,6 +166,89 @@ def test_bridge_expired_aisoc_record_is_rejected(model):
     assert reserved[0].human_decision == "reject" and "expired" in reserved[0].reason
 
 
+@pytest.mark.parametrize("mutate", [
+    lambda action: None,  # no action object echoed at all
+    lambda action: {},  # action echoed without request_digest
+    lambda action: {k: v for k, v in action.items() if k != "request_digest"},
+    lambda action: dict(action, request_digest=None),
+    lambda action: dict(action, request_digest=["sha256:" + "0" * 64]),
+    lambda action: "not-an-object",
+])
+def test_bridge_rejects_record_without_request_digest(model, mutate):
+    fake, soc, _ = _bridged_soc(model, lambda rec: True)
+    orig = fake.request
+
+    def strip(method, url, headers, body):
+        code, payload = orig(method, url, headers, body)
+        if "action" in payload:
+            payload = dict(payload, action=mutate(payload["action"]))
+        return code, payload
+
+    fake.request = strip
+    flow = _malicious_flow()
+    _seed_ioc(soc, flow)
+    res = soc.ingest(flow)
+    reserved = [q for q in res.requests if q.policy_status == "reserved"]
+    assert reserved and reserved[0].human_decision == "reject" and not reserved[0].executed
+    assert "request_digest" in reserved[0].reason
+    assert not soc.executor.blocked_hosts
+    assert res.verification_status == "VERIFIED"  # the refusal is itself signed and recorded
+
+
+def test_bridge_rejects_decision_received_after_timeout(model):
+    fake = FakeAiSOCServer()  # nobody decides automatically
+    client = AiSOCClient(AiSOCConfig(token="t", approval_timeout_s=2, approval_poll_s=0), http=fake)
+    soc = _soc(model)
+    t = [0.0]
+    orig = fake.request
+
+    def slow_poll(method, url, headers, body):
+        if method == "GET" and "/approvals/" in url:
+            t[0] += 10  # the round trip overruns the deadline ...
+            fake.decide(url.rstrip("/").rsplit("/", 1)[-1], True)  # ... and the approval lands during it
+        return orig(method, url, headers, body)
+
+    fake.request = slow_poll
+    bridge = AiSOCApprovalBridge(client, soc.keys["approver"], soc.clock, sleep=lambda s: None, wait_clock=lambda: t[0])
+    soc.set_approval_provider(bridge)
+    flow = _malicious_flow()
+    _seed_ioc(soc, flow)
+    res = soc.ingest(flow)
+    reserved = [q for q in res.requests if q.policy_status == "reserved"]
+    assert reserved and reserved[0].human_decision == "reject" and "after timeout" in reserved[0].reason
+    assert not reserved[0].executed and not soc.executor.blocked_hosts
+    assert fake.approvals[next(iter(fake.approvals))]["status"] == "approved"  # AiSOC did approve - just too late
+    assert res.verification_status == "VERIFIED"
+
+
+class _DeadTransport:
+    """HttpClient whose socket layer fails: the exceptions urllib raises are OSError subclasses."""
+
+    def __init__(self, exc):
+        self.exc = exc
+
+    def request(self, method, url, headers, body):
+        raise self.exc
+
+
+@pytest.mark.parametrize("exc", [ConnectionRefusedError(111, "refused"), TimeoutError("timed out"), OSError("network down")])
+def test_transport_exceptions_become_aisoc_error(model, exc):
+    client = AiSOCClient(AiSOCConfig(token="t", approval_timeout_s=2, approval_poll_s=0), http=_DeadTransport(exc))
+    with pytest.raises(AiSOCError):
+        client.create_approval("t", "s", "low", {"type": "tag_case"})
+    with pytest.raises(AiSOCError):
+        client.submit_alert([{"time": "now"}], "x", "d", "low")
+    soc = _soc(model)
+    bridge = AiSOCApprovalBridge(client, soc.keys["approver"], soc.clock, sleep=lambda s: None, wait_clock=lambda: 0.0)
+    soc.set_approval_provider(bridge)
+    flow = _malicious_flow()
+    _seed_ioc(soc, flow)
+    res = soc.ingest(flow)  # must not propagate the socket error out of the SOC pipeline
+    reserved = [q for q in res.requests if q.policy_status == "reserved"]
+    assert reserved and reserved[0].human_decision == "reject" and "unavailable" in reserved[0].reason
+    assert not soc.executor.blocked_hosts and res.verification_status == "VERIFIED"
+
+
 def test_fake_server_refuses_flipping_a_decision():
     fake = FakeAiSOCServer()
     client = AiSOCClient(AiSOCConfig(token="t"), http=fake)
