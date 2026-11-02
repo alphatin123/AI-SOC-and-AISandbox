@@ -38,6 +38,10 @@ python -m aisoc aisoc-push demo-output/slips-run --dry-run          # events tha
 python -m aisoc aisoc-bundle-verify tests/fixtures/aisoc/investigation-bundle.json --hmac-key test-key
 ```
 
+**逐步執行結果（Word）**：[`docs/CLI-OUTPUT.zh-TW.docx`](docs/CLI-OUTPUT.zh-TW.docx)
+收錄上述八個步驟的一次實際執行、完整輸出文字與擷取圖片、退出碼及繁體中文解釋。
+這是合成資料／fixture 的執行紀錄；dry-run 並未連線至真實 AiSOC，並非正式環境驗證。
+
 `simulate` writes `report.md` / `report.json` plus the exported `ledger.json`,
 `witness-checkpoints.json`, `tool-side-receipts.json`, `trusted-keys.json`,
 `cases.json` and `model-card.json`. `verify` recomputes the hash chain, checks
