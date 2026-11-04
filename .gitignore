@@ -8,3 +8,6 @@ demo-output/slips-run/
 demo-output/dataset-snapshot/
 demo-output/training-run/
 demo-output/slips-run-trained/
+
+# Penetration-test artifacts (large binaries + scratch copies)
+demo-output/pentest/
