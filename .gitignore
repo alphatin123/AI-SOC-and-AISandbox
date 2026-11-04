@@ -9,5 +9,6 @@ demo-output/dataset-snapshot/
 demo-output/training-run/
 demo-output/slips-run-trained/
 
-# Penetration-test artifacts (large binaries + scratch copies)
+# Penetration-test scratch artifacts (large run copies, attack copies, video frames).
+# Curated evidence is committed under docs/pentest-evidence/ and docs/media/.
 demo-output/pentest/
