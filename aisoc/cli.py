@@ -5,6 +5,11 @@
     python -m aisoc slips-ingest <slips-output>/alerts.json [--conn-log <slips-output>/zeek_files/conn.log]
     python -m aisoc aisoc-bundle-verify bundle.json [--hmac-key KEY]
     python -m aisoc aisoc-push demo-output/slips-run --base-url http://localhost:8000 --token ... [--dry-run]
+    python -m aisoc capture --interface eth0 --out sensor-output/pyshark-conn.log [--duration 600]
+    python -m aisoc dataset-snapshot --conn-log sensor-output/pyshark-conn.log --alerts <slips-output>/alerts.json --out demo-output/dataset-snapshot
+    python -m aisoc train-offline demo-output/dataset-snapshot --out demo-output/training-run
+    python -m aisoc slips-ingest <slips-output>/alerts.json --release-dir demo-output/training-run --internal-normality
+    python -m aisoc dashboard demo-output/slips-run --training-dir demo-output/training-run
 """
 
 from __future__ import annotations
@@ -199,16 +204,34 @@ def cmd_slips_ingest(args: argparse.Namespace) -> int:
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    print("training dual_model on synthetic data (only its release gate and thresholds are used; the internal "
-          f"normality model is {'ENABLED' if args.internal_normality else 'disabled'} for real traffic) ...")
-    model, ds = _train(args.seed)
     clock = Clock() if firewall is not None else Clock(start=Clock().now())
-    metrics = detection_metrics(model, ds.test)
-    # 即使是真實資料，模型一樣要走簽名發佈閘門才載入
-    agent = _make_agent(args.agent, clock, block_ttl_s=firewall.max_ttl_s if firewall is not None else 3600)
-    soc, manifest = _release_and_load(model, ds, clock, metrics, {},
-                                      block_ttl_s=firewall.max_ttl_s if firewall is not None else 3600,
-                                      agent=agent)
+    block_ttl = firewall.max_ttl_s if firewall is not None else 3600
+    agent = _make_agent(args.agent, clock, block_ttl_s=block_ttl)
+    release_dir = getattr(args, "release_dir", None)
+    if release_dir:
+        # 離線訓練域交來的製品：只給「bytes + manifest + 信任清單」，from_release 驗不過就不載入
+        from .idps import ModelReleaseError
+        from .training import TrainingDomainError, load_release_dir
+
+        try:
+            model_bytes, manifest, trust, trust_source = load_release_dir(release_dir, getattr(args, "release_trust", None))
+            if trust_source == "co-located":
+                print("WARNING: trusting release-trust.json shipped next to the model; hand the model_release public key "
+                      "to the inference host out-of-band for a real deployment", file=sys.stderr)
+            soc = AISOC.from_release(model_bytes, manifest, trust, agent, clock=clock)
+        except (TrainingDomainError, ModelReleaseError) as exc:
+            print(f"release refused: {exc}", file=sys.stderr)
+            return 1
+        print(f"loaded offline-trained release {manifest.payload.get('model_version')} from {release_dir} "
+              f"(known branch: {manifest.payload.get('evaluation', {}).get('known_branch_source', 'unspecified')}; "
+              f"internal normality model is {'ENABLED' if args.internal_normality else 'disabled'})")
+    else:
+        print("training dual_model on synthetic data (only its release gate and thresholds are used; the internal "
+              f"normality model is {'ENABLED' if args.internal_normality else 'disabled'} for real traffic) ...")
+        model, ds = _train(args.seed)
+        metrics = detection_metrics(model, ds.test)
+        # 即使是真實資料，模型一樣要走簽名發佈閘門才載入
+        soc, manifest = _release_and_load(model, ds, clock, metrics, {}, block_ttl_s=block_ttl, agent=agent)
     if firewall is not None:
         from .adapters.aisoc_stack import AiSOCApprovalBridge, AiSOCClient, AiSOCConfig
 
@@ -224,7 +247,8 @@ def cmd_slips_ingest(args: argparse.Namespace) -> int:
     cases = summ.export_cases()
     summary = {"disclaimer": _agent_disclaimer(args.agent) + " Slips confidences are not calibrated probabilities; tau_k is a deployment setting.",
                "source": {"alerts": str(args.alerts), "conn_log": str(args.conn_log) if args.conn_log else None,
-                          "slips_versions": summ.slips_versions},
+                          "slips_versions": summ.slips_versions,
+                          "model_origin": f"offline release dir {release_dir}" if release_dir else "synthetic training in-process"},
                "model_release": manifest.payload, **summ.to_dict(), "case_results": cases}
     (out / "slips-summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True, default=str))
     print(json.dumps({k: summary[k] for k in ("evidence", "incidents", "malformed", "cases", "status_counts", "requires_human_review", "known_families")}, indent=2))
@@ -323,6 +347,129 @@ def _flow_stub(case: Dict[str, Any]):
                       dst_port=int(f.get("dst_port", 0) or 0), bytes_in=0, bytes_out=0, pkts_in=0, pkts_out=0, duration_s=0,
                       mean_iat_ms=0, conn_failures=0, short_window_conns=0, distinct_dst_ports=0, login_failures=0,
                       observed_at=f.get("observed_at", ""))
+
+
+# ── 【老師註解】cmd_capture ──────────────────────────────────────
+# 做什麼：`python -m aisoc capture --interface eth0 | --pcap file.pcap [--bpf ...] --out conn.log [--packets N | --duration S]`：
+#         用 pyshark（tshark）抓封包 → FlowAssembler 組成連線 → 邊抓邊寫 Zeek 格式 conn.log → 收工寫 capture-manifest.json。
+# 為什麼：這是「架構一」最左邊的「數據採集」：pyshark 提供量化的連線紀錄；Slips 同時在同一張網卡上偵測／攔截並寫 alerts.json；
+#         兩者之後由 dataset-snapshot 合成資料集副本。
+# 怎麼看：pyshark/tshark 沒裝、沒權限、介面不存在 → CaptureUnavailable → 回傳碼 1、訊息寫明安裝方式；程式其餘部分不受影響。
+#         即時抓包通常要 root 或 CAP_NET_RAW；--bpf 只給即時抓包，--display-filter 只給 PCAP（tshark 的限制）。
+# 拿掉會怎樣：訓練域只能吃 Slips 自帶 Zeek 的 conn.log；沒有 Zeek 的環境就沒有量化特徵可用。
+# 對應：準則 #11、#13；測試 tests/test_capture.py::test_cli_capture_pcap_without_tshark_fails_cleanly
+def cmd_capture(args: argparse.Namespace) -> int:
+    from .capture import CaptureUnavailable, PysharkSource, run_capture
+
+    if bool(args.interface) == bool(args.pcap):
+        print("capture: give exactly one of --interface or --pcap", file=sys.stderr)
+        return 2
+    if args.pcap and args.bpf:
+        print("capture: --bpf applies to live capture only; use --display-filter for a pcap", file=sys.stderr)
+        return 2
+    if args.interface and args.display_filter:
+        print("capture: --display-filter applies to pcap files only; use --bpf for live capture", file=sys.stderr)
+        return 2
+    try:
+        source = (PysharkSource.live(args.interface, bpf_filter=args.bpf, tshark_path=args.tshark_path) if args.interface
+                  else PysharkSource.pcap(args.pcap, display_filter=args.display_filter, tshark_path=args.tshark_path))
+    except CaptureUnavailable as exc:
+        print(f"capture unavailable: {exc}", file=sys.stderr)
+        return 1
+    print(f"capturing from {'interface ' + args.interface if args.interface else 'pcap ' + args.pcap} -> {args.out} "
+          f"(header facts only; payload is counted, never stored). Stop with Ctrl-C.")
+
+    def progress(stats: Any) -> None:
+        print(f"  packets={stats.packets} flows_written={stats.flows_written}", file=sys.stderr)
+
+    try:
+        manifest = run_capture(source, args.out, max_packets=args.packets, duration_s=args.duration,
+                               idle_timeout_s=args.idle_timeout, manifest_path=args.manifest, progress=progress)
+    except RuntimeError as exc:
+        print(f"capture error: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps({k: manifest[k] for k in ("packets_used", "packets_skipped_non_ip", "flows_written", "stop_reason", "out_sha256")}, indent=2))
+    print(f"\nconn.log written to {args.out}; manifest: {args.manifest or Path(args.out).with_name('capture-manifest.json')}")
+    return 0
+
+
+# ── 【老師註解】cmd_dataset_snapshot ─────────────────────────────
+# 做什麼：`python -m aisoc dataset-snapshot --conn-log F --alerts F --out DIR [--capture-manifest F] [--slips-blocking]`：
+#         conn.log（pyshark 或 Zeek）+ Slips alerts.json → 貼標籤的 flows.jsonl + 由 dataset_curator 簽名的 manifest.json（只寫一次）。
+# 為什麼：這就是交給離線訓練域的「dataset 副本」：資料與標籤的來源、雜湊、標籤規則全部釘在簽名裡。
+# 怎麼看：--slips-blocking 只是「宣稱」部署時 Slips 有開 -p 攔截（manifest 欄位叫 blocking_claimed）；
+#         輸出目錄已存在且非空會拒絕（WORM）。印出的 by_label 讓你馬上知道這次抓到的攻擊家族夠不夠訓練。
+# 拿掉會怎樣：訓練域拿到的是沒簽名的檔案，改一行標籤（基線投毒）也不會被發現。
+# 對應：準則 #7、#9、#13；測試 tests/test_training_domain.py::test_cli_snapshot_train_and_ingest_release
+def cmd_dataset_snapshot(args: argparse.Namespace) -> int:
+    from .training import DATASET_CURATOR_ROLE, DatasetSnapshotError, build_snapshot, write_snapshot
+
+    try:
+        snap = build_snapshot(conn_log=args.conn_log, alerts=args.alerts, tenant=args.tenant,
+                              signer=Ed25519Signer(DATASET_CURATOR_ROLE), clock=Clock(),
+                              capture_manifest=args.capture_manifest, window_s=args.window_s,
+                              label_window_s=args.label_window_s, slips_blocking_claimed=args.slips_blocking)
+        out = write_snapshot(snap, args.out)
+    except (OSError, ValueError, DatasetSnapshotError) as exc:
+        print(f"dataset snapshot refused: {exc}", file=sys.stderr)
+        return 1
+    p = snap.manifest.payload
+    print(json.dumps({"dataset_id": p["dataset_id"], "flows": p["counts"]["flows"], "by_label": p["counts"]["by_label"],
+                      "label_sources": p["labeling"]["label_sources"], "evidence": p["slips"]["evidence"],
+                      "malformed": p["slips"]["malformed"], "flows_sha256": p["flows_sha256"]}, indent=2))
+    print(f"\nsigned dataset snapshot written to {out}/ (flows.jsonl, manifest.json, curator-keys.json); "
+          f"next: python -m aisoc train-offline {out}")
+    return 0
+
+
+# ── 【老師註解】cmd_train_offline ────────────────────────────────
+# 做什麼：`python -m aisoc train-offline SNAPSHOT_DIR --out DIR [--trust curator-keys.json] [--allow-synthetic-known] [--approved-by NAME]`：
+#         驗證 snapshot 簽名與雜湊 → 清洗 → 訓練 → 評估 → 簽發 → 閘門自檢 → 寫出 model.bin / release-manifest.json / training-report.json。
+# 為什麼：這是「架構一」的離線訓練域本體。輸出的目錄可以直接給 `slips-ingest --release-dir` 與 `dashboard --training-dir`。
+# 怎麼看：沒給 --trust 時會用 snapshot 目錄裡的 curator-keys.json 並在 stderr 警告（等於信任與資料一起送來的鑰匙）；
+#         真實家族不足時預設失敗，要 --allow-synthetic-known 才會用合成資料練已知分支（而且處處標記）。
+# 拿掉會怎樣：`slips-ingest --internal-normality` 永遠只能用合成基線——論文說明過那是誤用。
+# 對應：準則 #9、#10、#12、#13；測試 tests/test_training_domain.py::test_cli_snapshot_train_and_ingest_release
+def cmd_train_offline(args: argparse.Namespace) -> int:
+    from .idps import ModelReleaseError
+    from .training import DatasetSnapshotError, TrainingDomainError, load_snapshot, train_offline, write_training_output
+    from .training.dataset import trusted_keys_from_export
+
+    trust = None
+    try:
+        if args.trust:
+            trust = trusted_keys_from_export(json.loads(Path(args.trust).read_text(encoding="utf-8")))
+        snap = load_snapshot(args.snapshot_dir, trust)
+    except (OSError, ValueError, KeyError, TypeError, DatasetSnapshotError) as exc:
+        print(f"dataset snapshot refused: {exc}", file=sys.stderr)
+        return 1
+    if snap.trust_source == "co-located":
+        print("WARNING: curator key taken from curator-keys.json inside the snapshot directory; pass --trust with a key "
+              "received out-of-band for a real deployment", file=sys.stderr)
+    print(f"dataset {snap.dataset_id} verified ({len(snap.flows)} flows, flows_sha256 {snap.flows_sha256[:16]}...)")
+    try:
+        result = train_offline(snap, seed=args.seed, tau_k=args.tau_k, anomaly_quantile=args.anomaly_quantile,
+                               allow_synthetic_known=args.allow_synthetic_known, approved_by=args.approved_by,
+                               min_per_class=args.min_per_class, min_benign=args.min_benign, clock=Clock())
+    except (TrainingDomainError, ModelReleaseError, ValueError) as exc:
+        print(f"training stopped: {exc}", file=sys.stderr)
+        return 1
+    paths = write_training_output(result, args.out)
+    ev = result.evaluation
+    print(json.dumps({
+        "model_version": result.model.model_version, "known_branch_source": result.known_branch_source,
+        "split": result.split, "cleaning": {k: v for k, v in result.cleaning.to_dict().items()
+                                            if k in ("kept", "dropped_missing_measurements", "dropped_duplicates",
+                                                     "quarantined_anomaly_only", "dropped_rare_families")},
+        "benign_fpr": ev["detection_time_split"].get("benign_fpr_at_fixed_thresholds"),
+        "recall_by_family": ev["detection_time_split"].get("recall_by_family"),
+        "lofo": {k: (v.get("recall_on_held_out_family") if isinstance(v, dict) else v) for k, v in ev["leave_one_family_out"].items()},
+        "false_positives_per_day": ev["false_positives_per_day"].get("estimate_per_day"),
+        "stages": [(s["name"], s["status"]) for s in result.stages],
+    }, indent=2, default=str))
+    print(f"\nrelease written to {args.out}/ (model.bin, release-manifest.json, release-trust.json, training-report.json); "
+          f"use it with: python -m aisoc slips-ingest <alerts.json> --release-dir {args.out} --internal-normality")
+    return 0
 
 
 # ── 【老師註解】cmd_verify ───────────────────────────────────────
@@ -448,8 +595,10 @@ def _markdown(r: Dict[str, Any]) -> str:
 
 
 # ── 【老師註解】main ─────────────────────────────────────────────
-# 做什麼：argparse 入口。五個子命令：simulate（可重現實驗）、verify（離線重驗）、slips-ingest（真實 Slips 輸出）、
-#         aisoc-bundle-verify（重算 AiSOC 調查包完整性）、aisoc-push（把案件推到 AiSOC）。每個子命令用 set_defaults(fn=...) 綁到對應函式。
+# 做什麼：argparse 入口。子命令：simulate（可重現實驗）、verify（離線重驗）、slips-ingest（真實 Slips 輸出；--release-dir 可載入離線訓練的模型）、
+#         aisoc-bundle-verify（重算 AiSOC 調查包完整性）、aisoc-push（把案件推到 AiSOC）、dashboard（本機儀表板；--training-dir 顯示訓練域）、
+#         capture（pyshark 抓包 → conn.log）、dataset-snapshot（conn.log + alerts.json → 簽名資料集副本）、train-offline（離線訓練 → 簽名發佈）。
+#         每個子命令用 set_defaults(fn=...) 綁到對應函式。
 # 為什麼：所有功能都從同一個 `python -m aisoc` 進入，使用者不用知道模組結構；回傳碼就是結論（0 成功／1 驗證失敗／2 用法錯誤）。
 # 怎麼看：aisoc-push 的 --token 預設讀環境變數 AISOC_TOKEN，所以憑證不必出現在命令列歷史裡；
 #         slips-ingest 的 --internal-normality 是 store_true（預設關），要「明確要求」才會開，呼應 help 文字的警告。
@@ -480,7 +629,11 @@ def main(argv: List[str] | None = None) -> int:
                     help="investigation agent; qwen uses an explicitly configured loopback OpenAI-compatible endpoint")
     si.add_argument("--tau-k", type=float, default=0.5, help="min Slips confidence for the known branch to accept a class")
     si.add_argument("--internal-normality", action="store_true",
-                    help="score real flows with the synthetic-trained normality model (only meaningful after retraining on your own baseline)")
+                    help="score real flows with the internal normality model (only meaningful with --release-dir trained on your own baseline)")
+    si.add_argument("--release-dir", default=None,
+                    help="offline-trained release directory from `train-offline` (model.bin + release-manifest.json); replaces synthetic training")
+    si.add_argument("--release-trust", default=None,
+                    help="model_release public keys (JSON export) received out-of-band; default: release-trust.json inside --release-dir")
     si.add_argument("--nftables-config", default=None,
                     help="explicit administrator configuration for Ubuntu host blocking; requires external human approval")
     si.add_argument("--approval-base-url", default="http://127.0.0.1:8000",
@@ -506,11 +659,50 @@ def main(argv: List[str] | None = None) -> int:
     dashboard.add_argument("--conn-log", default=None, help="actively written Zeek conn.log for read-only IDPS monitoring")
     dashboard.add_argument("--alerts", default=None, help="actively written Slips alerts.json for read-only IDPS monitoring")
     dashboard.add_argument("--show-ips", action="store_true", help="show unmasked sensor IPs in the loopback-only dashboard")
+    dashboard.add_argument("--training-dir", default=None, help="train-offline output directory shown in the Training Domain view")
     def run_dashboard(args: argparse.Namespace) -> int:
         from .dashboard import serve
         return serve(args.run_dir, args.port, conn_log=args.conn_log, alerts=args.alerts,
-                 reveal_ips=args.show_ips)
+                 reveal_ips=args.show_ips, training_dir=args.training_dir)
     dashboard.set_defaults(fn=run_dashboard)
+    # capture：pyshark 即時抓包或讀 PCAP → Zeek 格式 conn.log（架構一「數據採集」）
+    cap = sub.add_parser("capture", help="pyshark connection capture (live interface or pcap) -> Zeek-style conn.log + capture manifest")
+    cap.add_argument("--interface", default=None, help="network interface for live capture (usually needs root / CAP_NET_RAW)")
+    cap.add_argument("--pcap", default=None, help="read packets from a pcap/pcapng file instead of a live interface")
+    cap.add_argument("--bpf", default=None, help="BPF capture filter for live capture, e.g. 'not port 6379'")
+    cap.add_argument("--display-filter", default=None, help="Wireshark display filter for pcap input")
+    cap.add_argument("--out", default="sensor-output/pyshark-conn.log", help="conn.log (JSON lines) to append flows to")
+    cap.add_argument("--manifest", default=None, help="capture manifest path (default: capture-manifest.json next to --out)")
+    cap.add_argument("--packets", type=int, default=None, help="stop after this many IP packets")
+    cap.add_argument("--duration", type=float, default=None, help="stop after this many seconds")
+    cap.add_argument("--idle-timeout", type=float, default=60.0, help="seconds without packets before a flow is closed")
+    cap.add_argument("--tshark-path", default=None)
+    cap.set_defaults(fn=cmd_capture)
+    # dataset-snapshot：conn.log + alerts.json → 簽名的資料集副本（WORM）
+    ds = sub.add_parser("dataset-snapshot", help="conn.log + Slips alerts.json -> signed, write-once dataset snapshot for the training domain")
+    ds.add_argument("--conn-log", required=True, help="Zeek-style conn.log from `capture` or from Slips' zeek_files/")
+    ds.add_argument("--alerts", required=True, help="Slips <output>/alerts.json covering the same traffic")
+    ds.add_argument("--out", default="demo-output/dataset-snapshot")
+    ds.add_argument("--tenant", default="tenant-slips")
+    ds.add_argument("--capture-manifest", default=None, help="capture-manifest.json written by `capture` (pins the conn.log hash)")
+    ds.add_argument("--window-s", type=int, default=60, help="aggregation window per (originator, responder) pair")
+    ds.add_argument("--label-window-s", type=int, default=300, help="max distance between Slips evidence time and a window to inherit its label")
+    ds.add_argument("--slips-blocking", action="store_true", help="record that Slips ran in blocking mode (-p); a claim, not verified")
+    ds.set_defaults(fn=cmd_dataset_snapshot)
+    # train-offline：snapshot → 清洗 → 訓練 → 評估 → 簽發
+    tr = sub.add_parser("train-offline", help="offline training domain: verified snapshot -> dual_model -> evaluation -> signed release")
+    tr.add_argument("snapshot_dir")
+    tr.add_argument("--out", default="demo-output/training-run")
+    tr.add_argument("--trust", default=None, help="dataset_curator public keys (JSON export) received out-of-band")
+    tr.add_argument("--seed", type=int, default=1)
+    tr.add_argument("--tau-k", type=float, default=0.7)
+    tr.add_argument("--anomaly-quantile", type=float, default=0.995)
+    tr.add_argument("--min-per-class", type=int, default=5, help="min Slips-labelled flows per attack family in the training split")
+    tr.add_argument("--min-benign", type=int, default=30, help="min benign (unflagged) flows required as baseline")
+    tr.add_argument("--allow-synthetic-known", action="store_true",
+                    help="if the capture has no usable attack family, train the known branch on synthetic data (clearly flagged)")
+    tr.add_argument("--approved-by", default="pending-human-gate", help="name of the human release approver; default records that approval is pending")
+    tr.set_defaults(fn=cmd_train_offline)
     args = ap.parse_args(argv)
     return args.fn(args)
 

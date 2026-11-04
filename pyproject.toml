@@ -11,6 +11,9 @@ dependencies = ["cryptography>=42"]
 
 [project.optional-dependencies]
 test = ["pytest>=8"]
+# `python -m aisoc capture` (Architecture 1 data collection). Also needs the system package
+# tshark / wireshark-cli and CAP_NET_RAW (or root) for live interfaces.
+capture = ["pyshark>=0.6"]
 
 [project.scripts]
 aisoc = "aisoc.cli:main"

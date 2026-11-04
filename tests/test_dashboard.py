@@ -288,3 +288,102 @@ def test_http_read_only_and_no_arbitrary_paths(tmp_path):
         server.shutdown()
         server.server_close()
         thread.join()
+
+def test_snapshot_exposes_model_release_without_inventing_one(tmp_path):
+    # no run files at all: nothing to show, nothing fabricated
+    assert snapshot(tmp_path)["model_release"] is None and snapshot(tmp_path)["model_card"] is None
+    # a Slips export carries the release manifest payload and where the model came from
+    release = {"model_version": "dual_model/ds-abc-seed1", "model_sha256": "a" * 64, "dataset_sha256": "b" * 64,
+               "feature_schema": "flow-features/1", "released_at": "2026-11-01T00:00:00Z", "approved_by": "pending-human-gate",
+               "schema_version": "owp-soc/model-release/0.1",
+               "evaluation": {"known_branch_source": "real-slips-labels", "benign_fpr": 0.02, "lofo_recall": {"port_scan": 1.0},
+                              "recall_by_family": {"port_scan": 1.0}, "dataset_id": "ds-abc"}}
+    (tmp_path / "slips-summary.json").write_text(json.dumps({"case_results": [], "model_release": release,
+                                                             "source": {"model_origin": "offline release dir /tmp/train", "alerts": "a.json"}}))
+    shown = snapshot(tmp_path)["model_release"]
+    assert shown["model_version"] == "dual_model/ds-abc-seed1" and shown["known_branch_source"] == "real-slips-labels"
+    assert shown["dataset_sha256"] == "b" * 64 and shown["lofo_recall"] == {"port_scan": 1.0} and shown["dataset_id"] == "ds-abc"
+    assert shown["model_origin"] == "offline release dir /tmp/train"
+    # a synthetic simulate export keeps it in report.json and is labelled as synthetic
+    (tmp_path / "slips-summary.json").unlink()
+    (tmp_path / "report.json").write_text(json.dumps({"model_release": {"model_version": "dual_model/synthetic-seed1",
+                                                                          "approved_by": "simulated-release-board", "evaluation": {}}}))
+    shown = snapshot(tmp_path)["model_release"]
+    assert shown["known_branch_source"] == "synthetic" and shown["approved_by"] == "simulated-release-board" and shown["model_origin"] is None
+    (tmp_path / "model-card.json").write_text(json.dumps({"model_version": "dual_model/synthetic-seed1", "feature_schema": "flow-features/1",
+                                                          "features": ["a"], "high_confidence_normal": 0.1,
+                                                          "known_branch": {"type": "softmax", "classes": ["benign", "c2"], "tau_k": 0.7, "temperature": 1.2, "weights": [[1]]},
+                                                          "normality_branch": {"type": "iforest", "quantile": 0.995, "tau_a": {"web": 0.5}, "n_trees": 50, "trees": []},
+                                                          "scaler": {"mean": [0]}}))
+    card = snapshot(tmp_path)["model_card"]
+    assert card["known_branch"] == {"type": "softmax", "classes": ["benign", "c2"], "tau_k": 0.7, "temperature": 1.2}
+    assert card["normality_branch"]["tau_a"] == {"web": 0.5} and "scaler" not in card and "weights" not in card["known_branch"]
+    # a malformed release block does not break the snapshot
+    (tmp_path / "report.json").write_text(json.dumps({"model_release": "not-a-dict"}))
+    assert snapshot(tmp_path)["model_release"] is None
+
+
+def test_training_endpoint_not_configured_and_ready(tmp_path, training_dir):
+    from aisoc.canonical import sha256_hex
+    from aisoc.dashboard import TRAINING_STAGES, training_snapshot
+
+    off = training_snapshot(None)
+    assert off["status"] == "NOT_CONFIGURED" and [s["name"] for s in off["stages"]] == list(TRAINING_STAGES)
+    assert all(s["status"] == "not-run" for s in off["stages"]) and "dataset" not in off
+    assert training_snapshot(tmp_path / "missing")["status"] == "ERROR"
+    waiting = tmp_path / "waiting"
+    waiting.mkdir()
+    assert training_snapshot(waiting)["status"] == "WAITING"
+    (waiting / "training-report.json").write_text("{not json")
+    assert training_snapshot(waiting)["status"] == "ERROR"
+    link = tmp_path / "link"
+    link.symlink_to(training_dir)
+    assert training_snapshot(link)["status"] == "ERROR"
+
+    ready = training_snapshot(training_dir)
+    report = json.loads((training_dir / "training-report.json").read_text())
+    assert ready["status"] == "READY" and ready["ip_visibility"] == "MASKED" and ready["training_dir"] == training_dir.name
+    assert ready["report_schema"] == "owp-soc/training-report/0.1"
+    assert ready["release_manifest_present"] is True and ready["model_present"] is True
+    assert [s["status"] for s in ready["stages"]] == ["done"] * 5 + ["self-check-passed"]
+    assert ready["dataset"]["verification"]["status"] == "VERIFIED" and ready["dataset"]["source_kind"] == "zeek-conn-log"
+    assert ready["dataset"]["flows"] == report["stages"][0]["detail"]["flows"] and ready["dataset"]["capture"] is None
+    assert ready["dataset"]["labeling"]["slips_uid"] > 0 and ready["dataset"]["labeling"]["slips_host_time"] > 0
+    assert ready["cleaning"]["quarantined_anomaly_only"] == 1 and ready["split"] == report["split"]
+    assert ready["model"]["known_branch_source"] == "real-slips-labels"
+    assert sorted(ready["model"]["known_classes"]) == ["benign", "bruteforce", "port_scan"]
+    assert ready["model"]["model_sha256"] == report["model"]["model_sha256"] == sha256_hex((training_dir / "model.bin").read_bytes())
+    assert set(ready["evaluation"]["leave_one_family_out"]) == {"bruteforce", "port_scan"}
+    assert ready["release"]["dataset_sha256"] == report["dataset_sha256"] and ready["release"]["approved_by"] == "pending-human-gate"
+    assert ready["release"]["human_approval"] == "pending" and ready["release"]["gate_status"] == "self-check-passed"
+    assert len(ready["release"]["checks"]) == 5 and ready["release"]["signer_key_id"]
+    # sensor hosts are masked unless --show-ips
+    assert ready["dataset"]["slips"]["alerted_hosts"] == ["x.x.x.x"]
+    assert training_snapshot(training_dir, reveal_ips=True)["dataset"]["slips"]["alerted_hosts"] == ["10.0.0.23"]
+    assert training_snapshot(training_dir, reveal_ips=True)["ip_visibility"] == "VISIBLE"
+
+    # HTTP: the view is wired, the endpoint is read-only and respects the configured directory only
+    for configured in (None, training_dir):
+        server = create_server(tmp_path, 0, training_dir=configured)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = f"http://127.0.0.1:{server.server_port}"
+        try:
+            with urlopen(base) as response:
+                html = response.read().decode()
+                assert 'data-view="training"' in html and 'id="training-panel"' in html and 'id="pipeline"' in html
+                assert "OFFLINE TRAINING DOMAIN" in html and 'id="training-stepper"' in html
+                assert not re.search(r"[\u3400-\u9fff]", html)
+            with urlopen(base + "/api/training?dir=/etc") as response:
+                data = json.load(response)
+                assert response.headers["Cache-Control"] == "no-store"
+            assert data["status"] == ("NOT_CONFIGURED" if configured is None else "READY")
+            if configured is not None:
+                assert data["dataset"]["slips"]["alerted_hosts"] == ["x.x.x.x"]
+            with pytest.raises(HTTPError) as failure:
+                urlopen(Request(base + "/api/training", data=b"{}"))
+            assert failure.value.code == 404
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()

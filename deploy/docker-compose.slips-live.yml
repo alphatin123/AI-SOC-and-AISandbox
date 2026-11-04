@@ -1,3 +1,9 @@
+# Live Slips sensor for the Codespaces / local loopback walk-through (docs/INTEGRATION.md).
+# Detection only: Slips' blocking mode (`-p`, Linux, needs `-i` and root) is a deployment
+# decision and is deliberately NOT enabled here. If you add `-p` below, record that claim
+# when building the training dataset: `python -m aisoc dataset-snapshot --slips-blocking ...`.
+# For Architecture 1, run `python -m aisoc capture --interface <same interface>` alongside this
+# sensor so the pyshark conn.log and Slips' alerts.json cover the same traffic and period.
 services:
   slips-live:
     image: stratosphereips/slips@sha256:110676362ed3129ba330a8c5acd480e454aa60499e608e3d15faf8a066b22bed
