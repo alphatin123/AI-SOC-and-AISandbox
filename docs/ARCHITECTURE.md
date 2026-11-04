@@ -42,16 +42,27 @@ refer to the paper.
              │ AcceptanceDecision by a human                                       │
              └────────────────────────────────────────────────────────────────────┘
 
-             ┌───────────── training domain (offline) ─────────────────────────┐
-             │ DualModel.train → to_bytes() → ModelReleaseManifest signed by     │
-             │ the model_release key → AISOC.from_release verifies hash + sig    │
-             │ before loading and writes a model_release ledger entry           │
-             └──────────────────────────────────────────────────────────────────┘
+             ┌───────────── training domain (offline) — paper "Architecture 1" ─────┐
+             │ capture/: pyshark live / pcap → FlowAssembler → Zeek-style conn.log   │
+             │           + capture manifest (sha256 of the log, header facts only)   │
+             │ Slips IPS on the same traffic → alerts.json (detect; optional block)  │
+             │ training/dataset.py: conn.log + Slips verdicts → labelled windows →   │
+             │           DatasetSnapshot signed by dataset_curator, write-once       │
+             │ training/offline.py: verify snapshot → validate/clean → time split →  │
+             │           known branch (Slips families) + normality branch (benign)   │
+             │           → leave-one-family-out + FP/day → ModelReleaseManifest      │
+             │           signed by model_release (approved_by = pending-human-gate)  │
+             │ AISOC.from_release verifies hash + signature before loading and       │
+             │ writes a model_release ledger entry                                   │
+             └──────────────────────────────────────────────────────────────────────┘
 ```
 
 Five keys exist in the SOC (`ledger`, `authorizer`, `executor`, `verifier`,
-`approver`); a sixth, `model_release`, belongs to the training domain — the
-SOC receives only its public key (`release_trust`) and never the private half.
+`approver`); two more belong to the training domain — `dataset_curator`
+(signs dataset snapshots) and `model_release` (signs release manifests). The
+SOC receives only the `model_release` public key (`release_trust`), the
+trainer only the `dataset_curator` public key (`--trust`), and neither ever
+sees the private halves.
 `TrustedKeys.verify(..., expected_role=...)` means a key trusted for one role
 cannot sign for another. In this reference implementation all of them live in
 one process; the paper's assumptions (§IV-B) require them to be in separately
@@ -68,6 +79,10 @@ administered domains with no reachable path from A to the private keys.
 | same decision table fed by an external detector (Slips) in place of one or both branches | `dual_model.py` (`ExternalKnown`, `ExternalAnomaly`, `DualModel.decide_external`) |
 | leave-one-family-out, time-ordered split | `simulate.py` (`generate(held_out_family=...)`) |
 | model as a signed, hash-pinned artefact crossing from the training domain | `dual_model.py` (`to_bytes` / `from_bytes`, schema + feature-schema checks), `release.py` (`release_model`, `verify_release` → `VerifiedRelease`, role `model_release`); `AISOC.__init__` records `verified` only for a `VerifiedRelease` bound to the very model object being loaded |
+| **Architecture 1** data collection: real-time / pcap packet capture reduced to header facts | `capture/flows.py` (`PacketView`, `FlowAssembler` → Zeek-style `conn.log` rows incl. `conn_state`), `capture/pyshark_source.py` (optional pyshark/tshark source, clean `CaptureUnavailable` failure), `capture/runner.py` (`run_capture`, capture manifest with `out_sha256` and `content_policy`) |
+| data labeling from the deployed IPS; dataset as a signed, write-once copy handed to the training domain | `training/dataset.py` (`build_flow_records`: Slips `uids` → host+time → anomaly-only → silence=benign, conflicts resolved by confidence × threat weight; `build_snapshot` / `write_snapshot` / `load_snapshot`, role `dataset_curator`, pins the capture-manifest hash) |
+| data validation and cleaning; time-ordered split; two branches; adversarial/robustness evaluation; registration + signing; release gate self-check | `training/offline.py` (`validate_and_clean` counts every drop and quarantines `unlabeled_anomaly`; `time_split`; `train_offline` refuses to fall back to synthetic known-branch data unless `allow_synthetic_known`, in which case `model_version`, `known_branch_source` and the manifest all say so; `evaluate` = held-out metrics, leave-one-family-out, FP/day, perturbation test; `write_training_output` → `model.bin`, `release-manifest.json`, `release-trust.json`, `training-report.json`) |
+| inference host loads only what passes the gate | `cli.py` `slips-ingest --release-dir [--release-trust]` → `load_release_dir` → `verify_release`; `dashboard --training-dir` shows the six stages and whether the ledger's model hash equals the release hash |
 
 Scores `c_k`, `s_a` and `τ_a` are stored separately on every `CaseDecision`.
 Labels are consumed only in `DualModel.train`; the agent's verdicts are never
@@ -176,6 +191,14 @@ project's SOC-extension proposals, not the upstream OWP schema.
 * One process; domain separation is organisational and must be verified by
   checking admin identities and reachable paths (§IV-B).
 * The injection screen is heuristic; the NonceStore is single-replica.
+* In the offline training domain the labels are Slips' verdicts: `benign` is
+  "not flagged", the known branch learns only families Slips named, and the
+  perturbation test in `evaluate` is not an adversarial-evasion or poisoning
+  evaluation. The pyshark flow assembler approximates Zeek's connection
+  states and sees no authentication results (`login_failures` = 0).
+  `--slips-blocking` is a recorded claim. Keys shipped next to the artefacts
+  are accepted with a warning only; the paper's separation needs them
+  delivered out-of-band.
 * AiSOC is exercised through a fake server derived from its OpenAPI
   description; approvals made in AiSOC are signed by the bridge key, so
   non-repudiation of *which analyst* decided still rests on AiSOC's own audit

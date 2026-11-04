@@ -12,6 +12,7 @@ Three subsystems, bound together by a tamper-evident evidence chain:
 | **AI Agent sandbox** | `aisoc/sandbox/` | constrained read-only investigation agent, controlled egress proxy (record-then-forward, fail-closed), external policy (`allowed / reserved / denied`), human approval, signing service, Policy Enforcement Point |
 | **OpenWorkProof-aligned evidence** | `aisoc/owp/` | `WorkOrder → CapabilityGrant → PolicyDecision → ActionReceipt → VerificationDecision → AcceptanceDecision`, hash-chained ledger, Merkle checkpoints, external witness, independent verifier |
 | **Adapters** | `aisoc/adapters/` | [Slips](https://github.com/stratosphereips/StratosphereLinuxIPS) as the AI-IDPS (IDMEFv2 `alerts.json` + Zeek `conn.log` → external detector branches), [AiSOC](https://github.com/beenuar/AiSOC) as the SOC platform (alerts, approval inbox as the human step, HMAC bundles anchored into the ledger) |
+| **Offline training domain (Architecture 1)** | `aisoc/capture/`, `aisoc/training/` | pyshark real-time / pcap capture → Zeek-style `conn.log` + signed capture manifest; Slips verdicts become labels; signed, write-once **dataset snapshot** (`dataset_curator` key) → validation/cleaning → known + normality branches → leave-one-family-out evaluation → signed release manifest (`model_release` key) with human approval recorded as pending until a person signs off |
 
 The orchestrator is `aisoc/soc.py`. Design mapping and limitations are in
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md); running against Slips and
@@ -26,7 +27,7 @@ AiSOC is described in [`docs/INTEGRATION.md`](docs/INTEGRATION.md).
 
 ```bash
 pip install -r requirements.txt
-python -m pytest -q                                   # 101 tests
+python -m pytest -q                                   # 192 tests
 python -m aisoc simulate --out demo-output/aisoc-run  # train, run SOC, scenarios, ablations
 python -m aisoc verify demo-output/aisoc-run          # offline re-verification of the exported run
 
@@ -37,6 +38,38 @@ python -m aisoc verify demo-output/slips-run
 python -m aisoc aisoc-push demo-output/slips-run --dry-run          # events that would go to AiSOC
 python -m aisoc aisoc-bundle-verify tests/fixtures/aisoc/investigation-bundle.json --hmac-key test-key
 ```
+
+### Architecture 1: offline training domain
+
+Capture → Slips → signed dataset snapshot → offline training → signed release →
+inference. Every hand-over is verified by hash + role-bound signature, never by
+file name or path (details in [`docs/INTEGRATION.md`](docs/INTEGRATION.md) §1.5,
+beginner walk-through in [`docs/GUIDE.zh-TW.md`](docs/GUIDE.zh-TW.md) §13):
+
+```bash
+pip install -e '.[capture]'                       # pyshark; live capture also needs tshark + CAP_NET_RAW
+python -m aisoc capture --interface eth0 --duration 60 --out sensor-output/pyshark-conn.log
+#   (or: python -m aisoc capture --pcap your.pcap --out sensor-output/pyshark-conn.log)
+#   run Slips on the same traffic -> sensor-output/alerts/alerts.json (docs/INTEGRATION.md §1.1 / live sensor)
+python -m aisoc dataset-snapshot --conn-log sensor-output/pyshark-conn.log \
+    --alerts sensor-output/alerts/alerts.json --capture-manifest sensor-output/capture-manifest.json \
+    --out demo-output/dataset-snapshot                          # signed, write-once dataset copy
+python -m aisoc train-offline demo-output/dataset-snapshot --out demo-output/training-run
+python -m aisoc slips-ingest sensor-output/alerts/alerts.json --conn-log sensor-output/pyshark-conn.log \
+    --release-dir demo-output/training-run --internal-normality --out demo-output/slips-run-trained
+python -m aisoc verify demo-output/slips-run-trained
+python -m aisoc dashboard demo-output/slips-run-trained --training-dir demo-output/training-run
+```
+
+`train-offline` refuses a snapshot whose `flows.jsonl` no longer matches the
+signed manifest; `slips-ingest --release-dir` refuses a `model.bin` whose hash
+does not match the signed release manifest. Labels come only from Slips, so
+`benign` means *not flagged by Slips*; the known branch is trained on real Slips
+families and stops with an error (instead of silently using synthetic data)
+when none has enough samples unless `--allow-synthetic-known` is given, in which
+case the fallback is flagged in `model_version`, the manifest and the dashboard.
+`approved_by` stays `pending-human-gate` until a person re-issues the release
+with `--approved-by`.
 
 ## Optional Local Qwen Investigation Agent
 
@@ -101,9 +134,45 @@ provide an approval service. IP addresses are masked, no private keys are served
 the UI cannot approve requests or change firewall rules. Historical case
 verification is distinct from the current integrity check of the export.
 
+The layout follows Architecture 1 of the paper. The sidebar is split into an
+**Offline Training Domain** group (Training Domain) and an **Inference Domain**
+group (Network IDPS, Detection Cases, Human Review, Evidence Ledger, Action Records).
+A six-step pipeline strip at the top of the Overview — Capture → Slips IPS →
+Dataset snapshot → Training domain → Release gate → Inference → ledger — shows
+per-stage counts and status, and a provenance line states whether the model
+hash recorded in the export's ledger equals the hash in the attached
+training-domain release. Without a training run attached the strip's first
+stages are simply off and the model release is shown as a recorded claim; the
+dashboard never fabricates provenance it cannot read.
+
 The server binds only to loopback. Keep any Codespaces port forwarding private;
 do not expose this unauthenticated analyst view publicly. The local icon bundle
 is Lucide 0.468.0; typography uses Google Fonts with a local fallback.
+
+### Training Domain View
+
+Attach a `train-offline` output directory to see the offline pipeline:
+
+```bash
+python -m aisoc dashboard demo-output/slips-run-trained \
+  --training-dir demo-output/training-run --port 8765
+```
+
+The view reads `training-report.json` (plus the presence of
+`release-manifest.json` and `model.bin`) and renders the six Architecture-1
+stages — data collection and labeling, validation and cleaning, known + anomaly
+models, adversarial and robustness evaluation, model registration and signing,
+release gate — with the dataset snapshot's verification status, label sources
+(`slips_uid`, `slips_host_time`, `slips_anomaly_only`, `slips_silence`), cleaning
+counts, model thresholds, leave-one-family-out recall, false positives per day,
+and the release-gate self-checks with human approval shown as `pending` until
+`approved_by` names a person. The case drawer additionally shows the
+standardized dual_model output (`known` / `anomaly` / `verdict` / `models`)
+for each ingested case. Without `--training-dir` the view reports
+`NOT_CONFIGURED`; a directory without a report reports `WAITING`; symlinks and
+unreadable reports report `ERROR`. Sensor hosts listed in the report are masked
+unless `--show-ips` is given. `/api/training` is read-only and ignores any
+directory supplied by the client.
 
 ### Model Conflict Review
 
@@ -215,6 +284,15 @@ Following the paper's research-integrity statement:
   egress proxy, external policy, human reservation and the PEP.
 * The AiSOC adapters are tested against a fake server built from the AiSOC
   OpenAPI description, not against a live deployment.
+* In the offline training domain, **labels come only from Slips**: `benign`
+  means *not flagged by Slips*, not human-verified clean traffic, so anything
+  Slips misses becomes part of the normality baseline (a poisoning surface that
+  is recorded, not detected). The pyshark `FlowAssembler` is a simplified
+  Zeek-style connection state machine, not Zeek; `login_failures` is always 0
+  because a connection log cannot see authentication results; `--slips-blocking`
+  records an operator claim that is not verified. Curator and release public keys
+  that ship next to the artefacts are accepted only with a printed warning —
+  hand them over out-of-band (`--trust`, `--release-trust`) for real use.
 * No zero-day immunity, no unconditional containment, no certification is
   claimed.
 

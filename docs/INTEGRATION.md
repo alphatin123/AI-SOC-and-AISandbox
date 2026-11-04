@@ -188,6 +188,142 @@ in `conn.log` and other windows carry only anomaly or weak-indicator evidence
 (*Slips anomaly-only / weak-indicator-only evidence*): those cases are decided
 on Slips evidence alone with volumetrics marked missing.
 
+### 1.5 Architecture 1: capture → Slips → signed dataset snapshot → offline training
+
+The paper's offline training domain (data collection and labeling → validation
+and cleaning → known-attack and anomaly models → adversarial and robustness
+evaluation → registration and signing → release gate) is implemented in
+`aisoc/capture/` and `aisoc/training/`. Slips keeps its role as the deployed
+IPS — it detects (and, if the operator enables `-p`, blocks) — and its verdicts
+become the training labels; pyshark provides the quantitative connection
+records when no Zeek is available.
+
+```
+ interface / pcap ─► python -m aisoc capture (pyshark) ─► conn.log + capture-manifest.json ─┐
+                                                                                           ├─► dataset-snapshot ─► flows.jsonl + manifest.json (signed: dataset_curator, write-once)
+ same traffic ─────► Slips (-i / -f, optional -p) ──────► alerts.json ─────────────────────┘                │
+                                                                                                            ▼
+                                                                                   train-offline ─► model.bin + release-manifest.json (signed: model_release)
+                                                                                                            │
+                                                     slips-ingest --release-dir  (hash + signature only) ◄──┘──► dashboard --training-dir
+```
+
+#### Capture
+
+```bash
+pip install 'aisoc[capture]'                     # pyshark; tshark must be installed separately
+sudo -E python -m aisoc capture --interface eth0 --duration 300 \
+    --bpf 'not (tcp port 6379 or tcp port 6387)' --out sensor-output/pyshark-conn.log
+python -m aisoc capture --pcap dataset/your-capture.pcap --out sensor-output/pyshark-conn.log
+```
+
+`capture` writes Zeek-`conn.log`-compatible JSON lines (one row per flow,
+`conn_state` derived from the TCP handshake / FIN / RST sequence, ICMP keyed
+without ports) and a `capture-manifest.json` with `packets_used`,
+`flows_written`, `stop_reason`, the `out_sha256` of the log and
+`content_policy: header facts only; payload bytes are counted, never stored`.
+Live capture needs `tshark` and `CAP_NET_RAW`; `--bpf` applies to live capture
+and `--display-filter` to pcap input (tshark's own constraint). When pyshark or
+tshark is missing the command exits 1 with `capture unavailable: …` and nothing
+else in the project is affected. Slips' own `zeek_files/conn.log` is accepted
+by the next step as well.
+
+#### Dataset snapshot (the "dataset copy" handed to the training domain)
+
+```bash
+python -m aisoc dataset-snapshot --conn-log sensor-output/pyshark-conn.log \
+    --alerts sensor-output/alerts/alerts.json \
+    --capture-manifest sensor-output/capture-manifest.json \
+    [--slips-blocking] --out demo-output/dataset-snapshot
+```
+
+Flows are aggregated per `(originator, responder, 60 s window)` and labelled
+only from Slips, in this priority:
+
+| `label_sources` | Rule | Result |
+|---|---|---|
+| `slips_uid` | evidence `uids` point at rows inside the window | family from `KNOWN_FAMILY_MAP` |
+| `slips_host_time` | same source host, evidence time within `--label-window-s` (300 s), target IP matches when given | family |
+| `slips_anomaly_only` | only `ANOMALY_TYPES` evidence, no family | `unlabeled_anomaly` (quarantined, never trains the known branch) |
+| `slips_silence` | no evidence | `benign` — *not flagged*, not verified clean |
+
+Conflicting families in one window are resolved by `Confidence × threat-level
+weight`; `info`/`low` evidence without a family is ignored. `manifest.json`
+carries the `flows_sha256` (the `dataset_id` is its prefix), the sha256 of both
+inputs, the embedded capture manifest (whose `out_sha256` must equal the
+conn.log hash, otherwise the snapshot is refused), label and Slips statistics, a
+`ground_truth` disclaimer, `slips.blocking_claimed` (`--slips-blocking` is an
+operator statement the code cannot verify) and a `dataset_curator` signature.
+`write_snapshot` is write-once; `load_snapshot` re-verifies the signature and
+the flows hash and refuses on any mismatch.
+
+#### Offline training and release
+
+```bash
+python -m aisoc train-offline demo-output/dataset-snapshot --out demo-output/training-run \
+    [--trust curator-keys.json] [--seed 1] [--tau-k 0.7] [--anomaly-quantile 0.995] \
+    [--min-per-class 5] [--min-benign 30] [--allow-synthetic-known] [--approved-by NAME]
+```
+
+Stages, as recorded in `training-report.json → stages`:
+
+1. `data_collection_and_labeling` — the verified snapshot (source kind, label
+   sources, capture summary);
+2. `data_validation_and_cleaning` — rows with missing measurements and exact
+   duplicates dropped **and counted**, `unlabeled_anomaly` quarantined,
+   families below `--min-per-class` dropped, benign baseline checked against
+   `--min-benign`; then a time-ordered 60/20/20 split (no shuffling);
+3. `known_attack_and_anomaly_models` — known branch on the Slips-labelled
+   families, normality branch on benign windows per service group. If no
+   family has enough samples the run **stops** with an error; only
+   `--allow-synthetic-known` trains the known branch on synthetic data, and then
+   `model_version`, `known_branch_source` (`synthetic-fallback`) and the
+   manifest all say so;
+4. `adversarial_and_robustness_evaluation` — held-out recall and benign FPR at
+   the fixed thresholds, leave-one-family-out recall of `SUSPECTED_UNKNOWN`,
+   false positives per day (`FP ÷ test span`), a feature-perturbation test
+   (explicitly *not* an evasion/poisoning evaluation);
+5. `model_registration_and_signing` — `model.bin` sha256, `ModelReleaseManifest`
+   signed by the `model_release` key, `approved_by` = `pending-human-gate` unless
+   `--approved-by` names the approver;
+6. `model_release_gate` — the trainer runs `verify_release` on its own output
+   (`self-check-passed`); the human gate is still recorded as pending.
+
+Output: `model.bin`, `release-manifest.json`, `release-trust.json`,
+`dataset-verification.json`, `cleaning-report.json`, `training-report.json`,
+`training-report.md`. When the curator key is taken from `curator-keys.json`
+inside the snapshot (no `--trust`), a warning is printed: for a real
+deployment the key must arrive out-of-band.
+
+#### Inference with the trained release
+
+```bash
+python -m aisoc slips-ingest output/<run>/alerts.json --conn-log output/<run>/zeek_files/conn.log \
+    --release-dir demo-output/training-run [--release-trust release-trust.json] --internal-normality \
+    --out demo-output/slips-run-trained
+python -m aisoc verify demo-output/slips-run-trained
+python -m aisoc dashboard demo-output/slips-run-trained --training-dir demo-output/training-run
+```
+
+`--release-dir` replaces the synthetic in-process training: the model bytes
+and manifest are loaded through `verify_release` (hash + role-bound signature)
+and a one-byte change in `model.bin` yields `release refused: model artefact
+hash does not match the signed manifest`. `--internal-normality` is now
+meaningful because the normality branch was trained on this deployment's own
+benign baseline. `slips-summary.json → model_release` records which release
+decided the cases, and the dashboard's Training Domain view shows the six
+stages and whether that hash equals the attached release.
+
+#### Live sensor and blocking
+
+`deploy/docker-compose.slips-live.yml` runs Slips in detection mode only. Slips'
+blocking mode (`-p`, Linux, requires `-i` and root) is a deployment decision
+that is deliberately not enabled there; if you enable it, pass
+`--slips-blocking` to `dataset-snapshot` so the manifest records the claim.
+pyshark capture and Slips should observe the same interface over the same
+period; a high `evidence_unmatched` count in the snapshot manifest means the two
+inputs do not cover the same traffic.
+
 ## 2. AiSOC ↔ sandbox / ledger
 
 ### Optional local Qwen investigation agent

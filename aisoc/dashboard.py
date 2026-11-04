@@ -127,6 +127,38 @@ def save_review(directory: Path, case_id: str, verdict: str, case_digest: str) -
         return dict(row)
 
 
+def _model_release(directory: Path, summary: dict[str, Any]) -> dict[str, Any] | None:
+    """Model release manifest payload of the run: Slips exports keep it in slips-summary.json, simulate in report.json."""
+    release = summary.get("model_release")
+    if not isinstance(release, dict):
+        report = _read_json(directory, "report.json", dict, {})
+        release = report.get("model_release")
+    if not isinstance(release, dict):
+        return None
+    evaluation = release.get("evaluation") if isinstance(release.get("evaluation"), dict) else {}
+    return {key: release.get(key) for key in ("model_version", "model_sha256", "dataset_sha256", "feature_schema",
+                                              "released_at", "approved_by", "schema_version")} | {
+        "known_branch_source": evaluation.get("known_branch_source") or ("synthetic" if "synthetic" in str(release.get("model_version")) else None),
+        "benign_fpr": evaluation.get("benign_fpr"), "lofo_recall": evaluation.get("lofo_recall"),
+        "recall_by_family": evaluation.get("recall_by_family"), "dataset_id": evaluation.get("dataset_id"),
+        "model_origin": summary.get("source", {}).get("model_origin") if isinstance(summary.get("source"), dict) else None,
+    }
+
+
+def _model_card(directory: Path) -> dict[str, Any] | None:
+    card = _read_json(directory, "model-card.json", dict, {})
+    if not card:
+        return None
+    known = card.get("known_branch") if isinstance(card.get("known_branch"), dict) else {}
+    normality = card.get("normality_branch") if isinstance(card.get("normality_branch"), dict) else {}
+    return {
+        "model_version": card.get("model_version"), "feature_schema": card.get("feature_schema"),
+        "features": card.get("features"), "high_confidence_normal": card.get("high_confidence_normal"),
+        "known_branch": {key: known.get(key) for key in ("type", "classes", "tau_k", "temperature")},
+        "normality_branch": {key: normality.get(key) for key in ("type", "quantile", "tau_a", "n_trees")},
+    }
+
+
 def snapshot(directory: Path) -> dict[str, Any]:
     cases, summary = _case_export(directory)
     ledger = _read_json(directory, "ledger.json", list, [])
@@ -155,6 +187,8 @@ def snapshot(directory: Path) -> dict[str, Any]:
         "ledger": ledger[-80:][::-1],
         "receipts": receipts[-80:][::-1],
         "checkpoints": checkpoints[-30:][::-1],
+        "model_release": _model_release(directory, summary),
+        "model_card": _model_card(directory),
     })
 
 
@@ -273,8 +307,88 @@ def traffic_snapshot(conn_log: Path | None = None, alerts: Path | None = None, *
     return result if reveal_ips else _redact(result)
 
 
+TRAINING_STAGES = (
+    "data_collection_and_labeling", "data_validation_and_cleaning", "known_attack_and_anomaly_models",
+    "adversarial_and_robustness_evaluation", "model_registration_and_signing", "model_release_gate",
+)
+
+
+# ── 【老師註解】training_snapshot ────────────────────────────────
+# 做什麼：把 `train-offline` 輸出目錄裡的 training-report.json（加上 release-manifest.json 是否存在）整理成儀表板
+#         Training Domain 分頁要的 JSON：六格流程的狀態、資料集來源與標籤統計、清洗結果、模型與門檻、評估、發佈閘門。
+# 為什麼：架構一的「離線訓練域」原本只有命令列報告；分析師與評審要能在同一個儀表板看到「模型從哪裡來、怎麼評估、誰批准」。
+# 怎麼看：沒給 --training-dir → NOT_CONFIGURED（分頁仍會畫出六格空流程）；目錄在但報告還沒寫出 → WAITING；
+#         讀得到 → READY。所有欄位都來自已簽名或已雜湊的檔案，儀表板只讀不寫；IP 一律經 _redact 遮罩，除非 --show-ips。
+# 拿掉會怎樣：UI 只剩推理域的案件，看不到訓練域；「模型版本」就是一個字串，無法對回資料集雜湊與 LOFO 結果。
+# 對應：準則 #9、#12；測試 tests/test_dashboard.py::test_training_endpoint_not_configured_and_ready
+def training_snapshot(training_dir: Path | None, *, reveal_ips: bool = False) -> dict[str, Any]:
+    now = datetime.now(timezone.utc).isoformat()
+    skeleton = [{"name": name, "status": "not-run", "detail": {}} for name in TRAINING_STAGES]
+    if training_dir is None:
+        return {"status": "NOT_CONFIGURED", "updated_at": now, "stages": skeleton}
+    if training_dir.is_symlink() or not training_dir.is_dir():
+        return {"status": "ERROR", "updated_at": now, "stages": skeleton, "error": "Training directory is unavailable"}
+    try:
+        report = _read_json(training_dir, "training-report.json", dict, {})
+    except (OSError, ValueError) as exc:
+        return {"status": "ERROR", "updated_at": now, "stages": skeleton, "error": str(exc)}
+    if not report:
+        return {"status": "WAITING", "updated_at": now, "stages": skeleton, "training_dir": training_dir.name,
+                "error": "training-report.json has not been written yet"}
+    stages = [stage for stage in report.get("stages", []) if isinstance(stage, dict) and stage.get("name") in TRAINING_STAGES]
+    by_name = {stage["name"]: stage for stage in stages}
+    ordered = [by_name.get(name, {"name": name, "status": "not-run", "detail": {}}) for name in TRAINING_STAGES]
+    collection = by_name.get(TRAINING_STAGES[0], {}).get("detail", {}) or {}
+    models = by_name.get(TRAINING_STAGES[2], {}).get("detail", {}) or {}
+    signing = by_name.get(TRAINING_STAGES[4], {}).get("detail", {}) or {}
+    gate = by_name.get(TRAINING_STAGES[5], {}).get("detail", {}) or {}
+    model = report.get("model") if isinstance(report.get("model"), dict) else {}
+    release = report.get("release") if isinstance(report.get("release"), dict) else {}
+    capture = collection.get("capture") if isinstance(collection.get("capture"), dict) else None
+    if capture and capture.get("pcap_path"):
+        capture = {**capture, "pcap_path": Path(str(capture["pcap_path"])).name}
+    payload = {
+        "status": "READY", "updated_at": now, "training_dir": training_dir.name,
+        "report_schema": report.get("schema"),
+        "ip_visibility": "VISIBLE" if reveal_ips else "MASKED",
+        "release_manifest_present": (training_dir / "release-manifest.json").is_file(),
+        "model_present": (training_dir / "model.bin").is_file(),
+        "dataset": {
+            "dataset_id": report.get("dataset_id"), "flows_sha256": report.get("dataset_sha256"),
+            "verification": report.get("dataset_verification"),
+            "source_kind": collection.get("source"), "flows": collection.get("flows"),
+            "conn_rows": collection.get("conn_rows"), "conn_log_sha256": collection.get("conn_log_sha256"),
+            "alerts_sha256": collection.get("alerts_sha256"),
+            "labeling": collection.get("labeling"), "slips": collection.get("slips"),
+            "ground_truth": collection.get("ground_truth"), "capture": capture,
+        },
+        "cleaning": report.get("cleaning"),
+        "split": report.get("split"),
+        "model": {
+            "model_version": model.get("model_version"), "model_sha256": model.get("model_sha256"),
+            "feature_schema": model.get("feature_schema"), "features": model.get("features"),
+            "known_branch_source": report.get("known_branch_source"),
+            "known_classes": models.get("known_classes"), "families_in_train": models.get("families_in_train"),
+            "tau_k": models.get("tau_k"), "anomaly_quantile": models.get("anomaly_quantile"),
+            "thresholds": models.get("thresholds"),
+            "known_branch": model.get("known_branch"), "normality_branch": model.get("normality_branch"),
+        },
+        "evaluation": report.get("evaluation"),
+        "release": {
+            "model_version": release.get("model_version"), "model_sha256": release.get("model_sha256"),
+            "dataset_sha256": release.get("dataset_sha256"), "released_at": release.get("released_at"),
+            "approved_by": release.get("approved_by"), "signer_key_id": signing.get("signer_key_id"),
+            "human_approval": gate.get("human_approval"), "checks": gate.get("checks"),
+            "gate_status": by_name.get(TRAINING_STAGES[5], {}).get("status", "not-run"), "note": gate.get("note"),
+        },
+        "stages": ordered,
+    }
+    return payload if reveal_ips else _redact(payload)
+
+
 def create_server(directory: Path, port: int = 8765, *, conn_log: Path | None = None,
-                  alerts: Path | None = None, reveal_ips: bool = False) -> ThreadingHTTPServer:
+                  alerts: Path | None = None, reveal_ips: bool = False,
+                  training_dir: Path | None = None) -> ThreadingHTTPServer:
     directory = directory.resolve(strict=True)
     if not directory.is_dir():
         raise ValueError("Dashboard requires an exported run directory")
@@ -294,9 +408,11 @@ def create_server(directory: Path, port: int = 8765, *, conn_log: Path | None = 
                 elif route == "/lucide.js":
                     payload = Path(__file__).with_name("lucide.js").read_bytes()
                     content_type = "text/javascript; charset=utf-8"
-                elif route in ("/api/snapshot", "/api/verify", "/api/traffic"):
+                elif route in ("/api/snapshot", "/api/verify", "/api/traffic", "/api/training"):
                     if route == "/api/traffic":
                         data = traffic_snapshot(conn_log, alerts, reveal_ips=reveal_ips)
+                    elif route == "/api/training":
+                        data = training_snapshot(training_dir, reveal_ips=reveal_ips)
                     else:
                         data = snapshot(directory) if route == "/api/snapshot" else verify_export(directory)
                     payload = json.dumps(data, ensure_ascii=False).encode("utf-8")
@@ -369,9 +485,10 @@ def create_server(directory: Path, port: int = 8765, *, conn_log: Path | None = 
 
 
 def serve(directory: str, port: int = 8765, *, conn_log: str | None = None,
-        alerts: str | None = None, reveal_ips: bool = False) -> int:
+        alerts: str | None = None, reveal_ips: bool = False, training_dir: str | None = None) -> int:
     server = create_server(Path(directory), port, conn_log=Path(conn_log) if conn_log else None,
-                   alerts=Path(alerts) if alerts else None, reveal_ips=reveal_ips)
+                   alerts=Path(alerts) if alerts else None, reveal_ips=reveal_ips,
+                   training_dir=Path(training_dir) if training_dir else None)
     print(f"AI-SOC dashboard: http://127.0.0.1:{server.server_port}", flush=True)
     try:
         server.serve_forever()

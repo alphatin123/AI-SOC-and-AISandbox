@@ -5,3 +5,6 @@ __pycache__/
 sensor-output/
 demo-output/aisoc-run/
 demo-output/slips-run/
+demo-output/dataset-snapshot/
+demo-output/training-run/
+demo-output/slips-run-trained/

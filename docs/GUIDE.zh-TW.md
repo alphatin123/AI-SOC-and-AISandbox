@@ -105,10 +105,14 @@ JCS 的規則：鍵按字典序排序、沒有多餘空白、數字用固定格�
 ## 2. 系統全貌
 
 ```
-                     訓練域（離線）
-                     ┌──────────────────────────────┐
-                     │ 訓練 → 簽名發布清單(model_release 鑰匙) │
-                     └──────────────┬───────────────┘
+                     訓練域（離線）＝ 論文「架構一：dual_model 訓練與推理」，詳見 §13
+                     ┌──────────────────────────────────────────────────────┐
+                     │ pyshark 即時抓包 → conn.log + 抓包清單 (aisoc/capture/)  │
+                     │ Slips IPS 偵測／攔截 → alerts.json（標籤來源）            │
+                     │ → 簽名資料集副本 (dataset_curator 鑰匙)                  │
+                     │ → 校驗清洗 → [已知分支 | 異常分支] → 留一家族評估          │
+                     │ → 簽名發布清單 (model_release 鑰匙) → 發布閘門（人批待定） │
+                     └──────────────────────────┬───────────────────────────┘
                                     │ 模型位元組 + 清單（只驗哈希與簽名）
    流量/Slips 告警 ──► ┌─────────────▼─────────────┐
                       │ AI-IDPS  dual_model        │  已知分支 c_k ＋ 異常分支 s_a
@@ -205,10 +209,10 @@ python -m pytest -q
 
 **預期輸出**（最後一行）：
 ```
-101 passed in ~9s
+192 passed in ~19s
 ```
 
-**怎麼判讀**：101 個測試涵蓋 §3 表中每一條準則。任何一個失敗都代表某條保證在你的環境不成立——**先停下來**。
+**怎麼判讀**：192 個測試涵蓋 §3 表中每一條準則（其中 `tests/test_capture.py`、`tests/test_training_domain.py` 是 §13 架構一的 27 個測試）。任何一個失敗都代表某條保證在你的環境不成立——**先停下來**。
 
 **出錯怎麼辦**：`ModuleNotFoundError: cryptography` → 沒裝依賴或沒啟用 venv。
 
@@ -409,6 +413,8 @@ grep -rc "老師註解" aisoc/ | sort
 rm -rf demo-output/     # 已在 .gitignore，不會被 commit
 ```
 
+**想接真實封包、自己訓練模型？** 做完這裡之後直接跳到 §13（架構一：從 pyshark 抓包、Slips 標籤到簽名模型），那裡是另一組步驟 11～17。
+
 ---
 
 ## 6. 輸出檔案怎麼讀
@@ -591,6 +597,8 @@ python -m pytest -q tests/test_policy_pep.py::test_pep_happy_path_then_replay_an
 | 13 | `aisoc/idps/features.py → known_model.py → normality_model.py → dual_model.py → release.py` | 特徵、已知分支、異常分支、Table III、簽名發布閘門 | 30 |
 | 14 | `aisoc/adapters/slips.py`、`aisoc_stack.py` | 外部偵測器與外部 SOC 平台怎麼接進來而不動信任鏈 | 20 |
 | 15 | `aisoc/scenarios.py`、`aisoc/simulate.py`、`aisoc/cli.py` | 19 個情境怎麼構造、報告怎麼產生、CLI 怎麼接 | 20 |
+| 16 | `aisoc/capture/flows.py → pyshark_source.py → runner.py` | 封包怎麼被組成 Zeek 風格的 conn.log 一列（`FlowAssembler`、`_conn_state` 狀態表）；pyshark 只是來源之一，缺 tshark 時怎麼乾淨失敗；抓包清單為什麼要釘住輸出檔哈希 | 20 |
+| 17 | `aisoc/training/dataset.py → offline.py` | Slips 告警怎麼變成標籤（優先順序 uid → 主機+時間 → 只有異常 → 沉默＝benign）、資料集副本怎麼簽名與驗證、六個階段怎麼跑、為什麼 `approved_by` 預設是 `pending-human-gate` | 30 |
 
 **判斷一個函數「有沒有做到它說的」的三步法**：
 1. 讀註解的「做什麼／拿掉會怎樣」，想像你是攻擊者會怎麼繞。
@@ -618,8 +626,9 @@ python -m pytest -q tests/test_policy_pep.py::test_pep_happy_path_then_replay_an
 | 10 | `idps/*`（可以最後做！） | 留一家族有 recall；FPR 在驗證集定門檻 |
 | 11 | `scenarios.py` 15 情境 + 4 消融 | 消融拿掉控制 ⇒ 攻擊成功（證明控制 load-bearing） |
 | 12 | `adapters/*`、`cli.py` | fixture 跑通；`verify` 可離線 |
+| 13 | `capture/*`（封包 → conn.log）、`training/*`（Slips 標籤 → 簽名資料集 → 離線訓練 → 簽名發布） | 改 `flows.jsonl` 一個字元 ⇒ 訓練拒跑；改 `model.bin` 一個位元組 ⇒ 推理端拒載入；沒有真實攻擊家族 ⇒ 預設報錯而不是偷偷用合成資料 |
 
-**為什麼模型放最後？** 因為這個專案的命題是：就算模型很弱、就算 Agent 被攻破，治理鏈仍然成立。先把鏈做對，再換更強的模型，鏈一行都不用改。
+**為什麼模型放最後？** 因為這個專案的命題是：就算模型很弱、就算 Agent 被攻破，治理鏈仍然成立。先把鏈做對，再換更強的模型，鏈一行都不用改。階段 13 就是證明：換成真實封包訓練的模型，§5 的 SOC 與帳本程式碼一行都沒改，只多了一個 `--release-dir`。
 
 ---
 
@@ -650,10 +659,12 @@ A：消融「egress proxy fails open when the audit domain is down」示範了�
 
 ## 11. 誠實範圍（不要在答辯時被問倒）
 
-- 全部資料是**合成**的；Agent 是**確定性 stub**，不是 LLM。
+- 全部資料是**合成**的；Agent 是**確定性 stub**，不是 LLM。§13 的架構一可以吃真實封包，但本指南的預期輸出仍然是用合成抓包量出來的。
 - 五個信任域跑在**同一個 Python 進程**，論文的保證需要它們由不同管理員掌控、沙箱用 microVM 隔離。
 - 外部見證是本地 append-only 檔案；正式環境要是第三方服務或公開時間戳。
-- 鑰匙在記憶體；正式環境要 HSM。
+- 鑰匙在記憶體；正式環境要 HSM。`dataset_curator` 與 `model_release` 的公鑰預設放在輸出目錄旁邊（會印 WARNING），正式環境要用 `--trust` / `--release-trust` 帶外交付。
+- 架構一的標籤**全部來自 Slips**：「benign」只代表 Slips 沒有告警，不代表流量經過人工確認乾淨；Slips 漏掉的攻擊會被當成正常基線（投毒風險）。`login_failures` 永遠是 0（conn.log 看不到登入結果）。
+- pyshark 的 `FlowAssembler` 是簡化版的 Zeek conn 狀態機，不是 Zeek；`--slips-blocking` 只是記錄操作者的宣稱，程式無法驗證 Slips 真的有攔截。
 - 沒有實作：投毒偵測、審批最短思考時間、模型檔在沙箱內被竊取的防護。
 - 所有數字描述**這個參考實作**，不是真實流量的偵測結果，不是安全認證。
 
@@ -671,4 +682,273 @@ A：消融「egress proxy fails open when the audit domain is down」示範了�
 
 ---
 
-*本指南對應 PR #5 分支 `feat/slips-aisoc-adapters`；所有輸出於 2026-11-02 以 Python 3.12.3 實測。*
+## 13. 架構一：離線訓練域——從即時封包到簽名模型（新手逐步版）
+
+論文 §5「dual_model 訓練與推理」畫的是這條離線管線：
+
+```
+數據採集與標註 → 數據校驗與清洗 → [已知攻擊模型 | 異常檢測模型]
+→ 對抗與穩健性評估 → 模型登記 + 簽名 → 模型發布閘門（驗簽、驗哈希、人工批准）
+```
+
+這一章把它落到程式碼：
+
+```
+ 網卡 / pcap ──► python -m aisoc capture (pyshark)  ──► conn.log + capture-manifest.json   ┐
+                                                                                          ├─► python -m aisoc dataset-snapshot
+ 同一段流量 ──► Slips IPS（偵測；可選 -p 攔截）      ──► alerts.json（標籤來源）             ┘        │
+                                                                                                   ▼
+                                                   簽名資料集副本 flows.jsonl + manifest.json（dataset_curator 鑰匙）
+                                                                                                   │
+                                                                            python -m aisoc train-offline（六階段）
+                                                                                                   ▼
+                                                   model.bin + release-manifest.json（model_release 鑰匙）+ training-report.json
+                                                                                                   │
+                                      python -m aisoc slips-ingest --release-dir（推理端只驗哈希與簽名）   python -m aisoc dashboard --training-dir
+```
+
+**三個關鍵字先記住**：
+
+| 名詞 | 意思 | 在哪個檔案 |
+|---|---|---|
+| 抓包清單（capture manifest） | 「這份 conn.log 是從哪個介面、幾個封包、什麼時候抓的；它的 sha256 是多少」 | `capture-manifest.json` |
+| 資料集副本（dataset snapshot） | 流量 + Slips 標籤合成的訓練資料，**整份哈希被 `dataset_curator` 鑰匙簽名**，寫一次就不准改 | `<snapshot>/flows.jsonl`、`manifest.json`、`curator-keys.json` |
+| 發布（release） | 訓練好的模型位元組 + 它的簽名清單（哈希、資料集哈希、評估數字、`approved_by`） | `<release>/model.bin`、`release-manifest.json`、`release-trust.json`、`training-report.json` |
+
+**每一步只信上一步的「簽名 + 哈希」，不信檔名、不信路徑、不信誰說的。** 這就是論文把訓練域與沙箱分開的理由：模型進沙箱前，沙箱只能用公鑰驗、不能用信任換。
+
+### 13.0 先決條件
+
+```bash
+python -m pip install -e '.[test,capture]'    # capture 額外裝 pyshark
+```
+
+- **抓即時封包**還需要系統套件 `tshark`（Debian/Ubuntu：`sudo apt install tshark`）以及 root 或 `CAP_NET_RAW`。沒有 tshark 也沒關係——步驟 12 之後全部不需要它，我在 Codespace 就是用合成抓包走完的。
+- **Slips**：見 `docs/INTEGRATION.md` §1.1（pcap 回放）或「Codespaces Live Sensor」（即時）。Slips 的 `-p` 是攔截模式（需要 root、只在 `-i` 即時模式下有效）；**我們的 compose 檔沒有開**，開不開是部署者的決定。
+- 下面所有輸出都來自測試用的合成抓包（`tests/conftest.py::synthetic_capture`：6 小時、200 個正常視窗 + 20 個掃描 + 20 個暴力破解）。真實流量的數字一定不同。
+
+### 步驟 11：抓封包，變成 conn.log（數據採集 ①）
+
+**做什麼**：用 pyshark 讀網卡或 pcap，把封包組成 Zeek 風格的連線紀錄（一條流一列），同時寫抓包清單。
+
+```bash
+# 即時（需要 tshark + root/CAP_NET_RAW）；60 秒或 5000 個 IP 封包後停
+sudo -E python -m aisoc capture --interface eth0 --duration 60 --packets 5000 \
+    --bpf 'not (tcp port 6379 or tcp port 6387)' --out sensor-output/pyshark-conn.log
+
+# 或離線讀 pcap（還是要 tshark，但不用 root）
+python -m aisoc capture --pcap dataset/your-capture.pcap --out sensor-output/pyshark-conn.log
+```
+
+**預期輸出**（進度每 1000 個封包印一行到 stderr，結束印清單摘要）：
+```
+capturing from interface eth0 -> sensor-output/pyshark-conn.log (header facts only; payload is counted, never stored). Stop with Ctrl-C.
+  packets=1000 flows_written=137
+  ...
+{
+  "packets_used": 4973,
+  "packets_skipped_non_ip": 27,
+  "flows_written": 612,
+  "stop_reason": "max_packets",
+  "out_sha256": "…"
+}
+
+conn.log written to sensor-output/pyshark-conn.log; manifest: sensor-output/capture-manifest.json
+```
+
+**怎麼判讀**：
+- 「header facts only; payload is counted, never stored」：只記錄五元組、旗標、位元組數等表頭事實，**封包內容不落地**——這是資料最小化，也是抓包清單 `content_policy` 欄位寫的承諾。
+- `stop_reason` 只會是 `source_exhausted`（pcap 讀完）/ `max_packets` / `duration` / `interrupted`（你按 Ctrl-C）/ `error`。不是這五個就是 bug。
+- `out_sha256` 是 conn.log 的指紋，下一步會被釘進資料集清單。**抓完就不要再動這個檔**。
+- conn.log 的欄位跟 Zeek 的 `conn.log` 一樣（`ts uid id.orig_h … conn_state orig_bytes resp_bytes …`），所以 Slips 自帶的 Zeek `conn.log` 也能直接餵給步驟 13。
+
+**出錯怎麼辦**：
+- `capture unavailable: pyshark is not installed…` → `pip install pyshark`。
+- `capture unavailable: cannot start live capture on 'lo': TSharkNotFoundException…` → 沒裝 tshark。exit code 1。
+- `capture unavailable: pcap file not found` → 路徑打錯。
+- 沒有封包但程式不停 → 預設沒有停止條件；加 `--duration` 或 `--packets`，或按 Ctrl-C（會正常收尾並寫清單）。
+
+讀程式：`aisoc/capture/flows.py` 的 `FlowAssembler` 註解講了 TCP 三向交握與 FIN/RST 怎麼對應 Zeek 的 `conn_state`（`SF / S0 / REJ / RSTO …`）；`tests/test_capture.py::test_conn_state_table` 一格一格驗。
+
+### 步驟 12：讓 Slips 看同一段流量（數據標註 ②）
+
+**做什麼**：Slips 才是「已識別惡意模式」的來源。它輸出的 `alerts.json` 之後會變成訓練標籤。
+
+```bash
+# pcap 回放
+docker compose -f deploy/docker-compose.slips.yml run --rm slips ./slips.py -f dataset/your-capture.pcap -o output/
+# 即時（與步驟 11 同一張網卡）
+AISOC_CAPTURE_INTERFACE=eth0 docker compose -f deploy/docker-compose.slips-live.yml up -d
+```
+
+**怎麼判讀**：你需要兩個檔——`alerts.json`（IDMEFv2，一行一個 JSON）和 conn.log（步驟 11 的，或 Slips 自己的 `zeek_files/conn.log`）。兩者必須覆蓋**同一段時間、同一批主機**，否則標籤對不上流量，下一步會看到很多 `evidence_unmatched`。
+
+**出錯怎麼辦**：Slips 跑了但 `alerts.json` 是空的 → 很正常，乾淨流量沒有告警；此時你只有 benign 標籤，步驟 14 會告訴你怎麼辦。
+
+### 步驟 13：合成簽名資料集副本（數據採集與標註的「封存」）
+
+**做什麼**：把 conn.log 切成 60 秒視窗（每對「來源主機 → 目的主機」一個視窗），用 Slips 告警替每個視窗貼標籤，整份資料算哈希並由 `dataset_curator` 鑰匙簽名。
+
+```bash
+python -m aisoc dataset-snapshot --conn-log sensor-output/pyshark-conn.log \
+    --alerts sensor-output/alerts/alerts.json \
+    --capture-manifest sensor-output/capture-manifest.json \
+    --out demo-output/dataset-snapshot
+```
+（沒有 `--capture-manifest` 也能跑，`source.kind` 會是 `zeek-conn-log`；有的話整份抓包清單會嵌進 `manifest.json → source.capture_manifest`、`source.kind` 變成 `pyshark-capture`，並檢查 conn.log 的哈希等於抓包清單的 `out_sha256`——抓完之後有沒有被動過，一比就知道。）
+
+**預期輸出**（合成抓包）：
+```
+{
+  "dataset_id": "ds-a2dfd2279657",
+  "flows": 390,
+  "by_label": {"benign": 326, "unlabeled_anomaly": 1, "bruteforce": 34, "port_scan": 29},
+  "label_sources": {"slips_silence": 326, "slips_anomaly_only": 1, "slips_host_time": 38, "slips_uid": 25},
+  "evidence": 41,
+  "malformed": 0,
+  "flows_sha256": "a2dfd2279657…"
+}
+
+signed dataset snapshot written to demo-output/dataset-snapshot/ (flows.jsonl, manifest.json, curator-keys.json); next: python -m aisoc train-offline demo-output/dataset-snapshot
+```
+
+**怎麼判讀**（這是整章最需要懂的一張表）：
+
+| `label_sources` | 標籤怎麼來的 | 可信度 |
+|---|---|---|
+| `slips_uid` | Slips 證據的 `uids` 直接指到這個視窗裡的連線 | 最高 |
+| `slips_host_time` | 同一台來源主機、時間差 ≤ `--label-window-s`（預設 300 秒）、目標 IP 相符 | 中 |
+| `slips_anomaly_only` | 視窗裡只有 Slips 的異常／ML 類證據、沒有家族 → 標 `unlabeled_anomaly`，**不會**進已知分支訓練 | 隔離 |
+| `slips_silence` | Slips 完全沒說話 → `benign` | **最低**：只代表「Slips 沒抓到」 |
+
+- `dataset_id` 就是 `flows_sha256` 的前 12 位：資料集的身分**等於**它的內容指紋。
+- 同一視窗有多個不同家族的證據時，用 `Confidence × threat_level 權重` 取最大者，`manifest.json → labeling.conflicts` 會記錄衝突數。
+- `threat_level` 為 `info`/`low` 且沒有家族的「弱指標」證據完全不參與標籤，也不算進 `evidence_matched`。
+- `manifest.json → ground_truth` 那段英文是給審稿人看的免責：標籤來自 Slips，不是人工確認。
+
+**出錯怎麼辦**：
+- `refusing to overwrite … (write-once)` → 輸出目錄已有快照。這是刻意的：資料集副本不能原地覆寫，換一個 `--out`。
+- `evidence_unmatched` 很大 → 時間或主機對不上，回步驟 12 確認兩個檔來自同一段流量。
+- `windows_with_missing_measurements` > 0 → conn.log 有些列缺位元組數等欄位（Zeek 用 `-`），這些視窗的量測會是 `None`，步驟 14 會把它們丟掉並計數。
+
+讀程式：`aisoc/training/dataset.py::build_flow_records`（標籤優先順序）、`build_snapshot`（簽名）、`write_snapshot`（write-once）。測試：`tests/test_training_domain.py::test_labels_follow_slips_rule_priority`、`::test_snapshot_pins_capture_manifest_hash`。
+
+### 步驟 14：離線訓練六階段（校驗清洗 → 兩個模型 → 評估 → 登記簽名 → 閘門自檢）
+
+**做什麼**：驗資料集簽名 → 清洗 → 按時間切 60/20/20 → 訓練已知分支（Slips 家族）與異常分支（benign 基線）→ 留一家族評估 → 算模型哈希、用 `model_release` 鑰匙簽發布清單 → 自己當一次閘門驗一遍。
+
+```bash
+python -m aisoc train-offline demo-output/dataset-snapshot --out demo-output/training-run
+```
+
+**預期輸出**（約 1 秒）：
+```
+WARNING: curator key taken from curator-keys.json inside the snapshot directory; pass --trust with a key received out-of-band for a real deployment
+dataset ds-a2dfd2279657 verified (390 flows, flows_sha256 a2dfd22796571149...)
+{
+  "model_version": "dual_model/ds-a2dfd2279657-seed1",
+  "known_branch_source": "real-slips-labels",
+  "split": {"train": 232, "val": 78, "test": 78},
+  "cleaning": {"kept": 388, "dropped_missing_measurements": 1, "dropped_duplicates": 0,
+               "quarantined_anomaly_only": 1, "dropped_rare_families": {}},
+  "benign_fpr": 0.0156,
+  "recall_by_family": {"port_scan": 1.0, "bruteforce": 1.0},
+  "lofo": {"bruteforce": 1.0, "port_scan": 1.0},
+  "false_positives_per_day": 18.23,
+  "stages": [["data_collection_and_labeling", "done"], ["data_validation_and_cleaning", "done"],
+             ["known_attack_and_anomaly_models", "done"], ["adversarial_and_robustness_evaluation", "done"],
+             ["model_registration_and_signing", "done"], ["model_release_gate", "self-check-passed"]]
+}
+
+release written to demo-output/training-run/ (model.bin, release-manifest.json, release-trust.json, training-report.json); use it with: python -m aisoc slips-ingest <alerts.json> --release-dir demo-output/training-run --internal-normality
+```
+
+**怎麼判讀**：
+- 第一行 WARNING 是**故意吵你**：訓練端相信了快照目錄裡附帶的 `curator-keys.json`。正式部署要把策展人公鑰用別的管道交給訓練主機，然後加 `--trust curator.json`，WARNING 就會消失。
+- `dataset … verified` 沒出現就不會往下跑。改 `flows.jsonl` 任何一個字元會得到 `dataset snapshot refused: flows.jsonl does not match the flows_sha256 pinned by the signed manifest`。
+- `known_branch_source: real-slips-labels` 代表已知分支是用**真實 Slips 家族**訓練的。如果抓包裡沒有任何家族達到 `--min-per-class`（預設 5 筆），預設會停下來報 `training stopped: … pass --allow-synthetic-known …`；加了那個旗標才會退回合成資料，而且 `known_branch_source` 會變成 `synthetic-fallback`，儀表板上也會標黃。**絕不偷偷替換**。
+- `lofo`（留一家族）：把某個家族整個從訓練集拿掉，看異常分支還能不能把它送進 `SUSPECTED_UNKNOWN`。1.0 是合成資料的數字，真實流量通常低很多——這才是論文要量化的「疑似零日召回率」。
+- `false_positives_per_day` ＝ 測試集 benign 視窗被升級（送人審／調查）的次數 ÷ 測試集涵蓋的天數。它隨抓包時長縮放、不隨網站規模縮放；分析師負載就看這個。
+- `model_release_gate: self-check-passed` 的意思是「訓練端自己用公鑰驗過一遍」，**不是**人批准了。`release-manifest.json → approved_by` 預設是 `pending-human-gate`；真人審過之後才用 `--approved-by 王小明` 重出一份。
+
+**出錯怎麼辦**：
+- `training stopped: benign baseline too small (…)` → benign 視窗少於 `--min-benign`（預設 30）。抓久一點。
+- 想復現同樣的模型哈希 → 固定 `--seed`，模型是確定性的。
+
+讀程式：`aisoc/training/offline.py` 的 `validate_and_clean`（每一筆被丟掉的流量都要有名目）、`time_split`（**按時間**切，不洗牌——洗牌會讓「未來」洩漏到訓練）、`evaluate`、`train_offline`。測試：`::test_validate_and_clean_counts_every_drop`、`::test_time_split_is_ordered`、`::test_train_offline_end_to_end_on_real_labels`、`::test_synthetic_known_fallback_is_explicit`。
+
+### 步驟 15：把簽名模型交給推理端（模型發布閘門）
+
+**做什麼**：推理端（`slips-ingest`）不再用合成資料現場訓練，而是載入 `--release-dir`，**只驗哈希與簽名**。
+
+```bash
+python -m aisoc slips-ingest sensor-output/alerts/alerts.json \
+    --conn-log sensor-output/pyshark-conn.log \
+    --release-dir demo-output/training-run --internal-normality \
+    --out demo-output/slips-run-trained
+python -m aisoc verify demo-output/slips-run-trained
+```
+
+**預期輸出**：
+```
+WARNING: trusting release-trust.json shipped next to the model; hand the model_release public key to the inference host out-of-band for a real deployment
+loaded offline-trained release dual_model/ds-a2dfd2279657-seed1 from demo-output/training-run (known branch: real-slips-labels; internal normality model is ENABLED)
+{ "evidence": 41, "incidents": 1, "malformed": 0, "cases": 41,
+  "status_counts": {"SUSPECTED_UNKNOWN": 1, "KNOWN_SUSPICIOUS": 40}, "requires_human_review": 1, … }
+```
+`verify` → `"status": "VERIFIED"`。
+
+**怎麼判讀**：
+- 這裡 `--internal-normality` **終於有意義了**（§5 步驟 5 時我們把它關掉，因為合成基線不能比真實網路）：異常分支現在是用你自己的 benign 基線訓的。
+- 同樣有一個 WARNING：推理端用了模型旁邊的 `release-trust.json`。正式部署用 `--release-trust release.json` 帶外交付。
+- 帳本第一筆 `model_release` 會記下 `model_version` 與 `model_sha256`，所以事後任何人都能對照 `training-report.json` 查「這批案件是哪個模型判的、模型是哪份資料集練的」。
+
+**動手破壞它**：
+```bash
+cp -r demo-output/training-run /tmp/bad-release
+printf '\x00' | dd of=/tmp/bad-release/model.bin bs=1 seek=100 count=1 conv=notrunc
+python -m aisoc slips-ingest sensor-output/alerts/alerts.json --release-dir /tmp/bad-release --out /tmp/x
+```
+預期：`release refused: model artefact hash does not match the signed manifest`，exit 1，`/tmp/x` 不會有帳本。改 `release-manifest.json` 裡任何欄位則是 `manifest signature invalid or signer not trusted for model release`。這就是準則 #10 在真實模型上的樣子。
+
+### 步驟 16：在儀表板看整條架構一
+
+```bash
+python -m aisoc dashboard demo-output/slips-run-trained --training-dir demo-output/training-run --port 8765
+```
+
+打開 http://127.0.0.1:8765：
+
+- 左側導覽現在分成 **OFFLINE TRAINING DOMAIN**（Training Domain）與 **INFERENCE DOMAIN**（Network IDPS、Detection Cases、Human Review、Evidence Ledger、Action Records），對應論文兩個管理域。
+- 最上方的 **Architecture 1 pipeline** 六格：Capture → Slips IPS → Dataset snapshot → Training domain → Release gate → Inference。每格顯示來源數字與狀態色（綠＝有簽名可驗／黃＝宣稱或待人批／灰＝沒跑）。
+- 下方一行 **provenance**：推理端帳本記的模型哈希是否**等於**訓練域發布的哈希；相等才是綠色「matches the training-domain release」。只開 `simulate` 輸出、沒有 `--training-dir` 時會寫「(recorded claim) · no training run attached」——儀表板不替你補證據。
+- **Training Domain** 分頁：六階段進度條、標籤來源表、清洗計數、模型門檻（`tau_k`、每服務群 `tau_a`）、留一家族與 FPR、發布閘門五項檢查與 `human approval: pending`。
+- 感測器 IP 預設遮罩成 `x.x.x.x`；`--show-ips` 才顯示。
+
+**沒有 `--training-dir`**：Training Domain 顯示 `NOT_CONFIGURED` 與提示文字，pipeline 前四格灰色——這是正常狀態，不是錯誤。
+
+### 步驟 17：清理
+
+```bash
+rm -rf demo-output/dataset-snapshot demo-output/training-run demo-output/slips-run-trained sensor-output/
+```
+（這些路徑都在 `.gitignore`。）
+
+### 13.1 這一章對應的準則與測試
+
+| 準則 | 架構一的體現 | 測試 |
+|---|---|---|
+| #7 只存指紋 | 資料集身分＝內容哈希；抓包清單釘 conn.log 哈希 | `test_training_domain.py::test_snapshot_round_trip_and_tamper_detection`、`::test_snapshot_pins_capture_manifest_hash` |
+| #9 一角色一鑰匙 | `dataset_curator` 簽資料集、`model_release` 簽模型，角色錯驗簽失敗 | `::test_snapshot_round_trip_and_tamper_detection`（錯角色） |
+| #10 模型釘死 | `slips-ingest --release-dir` 只驗哈希＋簽名 | `::test_cli_snapshot_train_and_ingest_release` |
+| #11 缺資料 ≠ 正常 | 缺量測視窗被丟並計數，不補 0 | `::test_validate_and_clean_counts_every_drop` |
+| #12 疑似零日要量化 | 留一家族召回率寫進發布清單 | `::test_train_offline_end_to_end_on_real_labels` |
+| #13 誠實範圍 | `approved_by` 預設 pending；合成退路必須明示；benign 只是 Slips 沉默 | `::test_synthetic_known_fallback_is_explicit` |
+
+### 13.2 答辯時怎麼講這一章（30 秒版）
+
+「訓練域的輸入是兩份檔：pyshark 抓的連線紀錄和 Slips 的告警。我們不用檔名或路徑建立信任，而是把合併後的資料集整份雜湊、由策展人鑰匙簽名，寫一次不准改；訓練出來的模型再由另一把發布鑰匙簽名。推理端只驗這兩層簽名與雜湊——改一個位元組就拒載入。標籤全部來自 Slips，所以我們把『正常』誠實地定義成『Slips 沒有告警』，而且留一家族實驗量化了異常分支對沒見過的攻擊的召回率。」
+
+---
+
+*本指南對應 PR #5 分支 `feat/slips-aisoc-adapters`；§13 對應分支 `feat/pyshark-capture-dataset-training-ui`。所有輸出於 2026-11-02／11-04 以 Python 3.12.3 實測。*
