@@ -158,7 +158,7 @@ becomes one `FlowRecord` / case.
 | `Note.evidence_type` | class lookup in `KNOWN_FAMILY_MAP` (→ family, ATT&CK technique) or membership in `ANOMALY_TYPES` | structured, trusted as a *claim by Slips* |
 | `Confidence` | known-branch score `c_k` (rejected below `--tau-k`, default 0.5) | structured |
 | `Note.threat_level` | weight; `info`/`low` evidence never accepts a class on its own | structured |
-| `Note.uids` → `conn.log` | volumetrics (bytes, packets, duration, failed-connection ratio, distinct ports, mean inter-arrival). Missing → `None`, never guessed | structured |
+| `Note.uids` → `conn.log` | volumetrics (bytes, packets, duration, failed-connection ratio, distinct ports, mean inter-arrival), oriented to the case host (a host that is Zeek's responder has its `resp_*` counted as outbound). A measurement missing on *any* row leaves that aggregate `None`, never 0 | structured |
 | `Description` | **untrusted** `log_excerpt` only, wrapped in `Untrusted[...]` with the injection screen. Never parsed for decisions | untrusted |
 | `Analyzer.Model` | recorded as the Slips version in `model_version` (`<internal>+slips/<module>`) | provenance |
 
@@ -166,7 +166,7 @@ Decision outcome (`DualModel.decide_external`):
 
 | Slips evidence in the window | Case status |
 |---|---|
-| mapped type with confidence ≥ τ_k and threat weight ≥ 0.5 | `KNOWN_SUSPICIOUS` (agent investigates; technique attached) |
+| mapped type with confidence ≥ τ_k and threat weight ≥ 0.5 (the best *qualifying* evidence wins; a higher-confidence but low-weight one cannot veto it) | `KNOWN_SUSPICIOUS` (agent investigates; technique attached) |
 | only `ANOMALY_TYPES` (Slips ML / flow-anomaly modules) | `SUSPECTED_UNKNOWN` — paper's "suspected zero-day": human review mandatory |
 | only unmapped / low-weight evidence | `UNKNOWN` — human review, no agent action |
 | mapped type rejected and anomaly absent/low | `INSUFFICIENT_EVIDENCE` / `LOW_RISK_OBSERVE` |
@@ -250,12 +250,15 @@ AiSOC approval:
 1. `POST /api/v1/approvals` with `title`, `summary` (the `ApprovalView`:
    supporting *and* missing evidence, injection flags, impact, reversibility),
    `risk_level`, `action = {request_digest, params, destination}`, `expires_at`.
-2. Poll `GET /api/v1/approvals/{id}` until decided or TTL.
+2. Poll `GET /api/v1/approvals/{id}` until decided or TTL. A decision that is
+   only observed after the deadline is treated like a timeout.
 3. On `approve`, sign a `HumanApproval` with the SOC **approver** key, with
    `approver_id = "aisoc:<decided_by_id>"` and `external_ref` pointing at the
-   AiSOC approval id. On deny, timeout, transport error, or if AiSOC echoes a
-   different `request_digest` than was sent, produce a **signed reject** —
-   never an unsigned "unknown".
+   AiSOC approval id. On deny, timeout, transport error (including socket-level
+   failures), or if the echoed `action.request_digest` is missing, malformed or
+   different from what was sent, produce a **signed reject** — never an
+   unsigned "unknown". AiSOC must echo the `action` object back exactly; a
+   deployment that does not is rejected fail-closed rather than trusted.
 
 Wire it after constructing the SOC:
 

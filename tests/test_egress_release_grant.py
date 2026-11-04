@@ -14,10 +14,13 @@ from aisoc.idps import (
     ExternalAnomaly,
     ExternalKnown,
     ModelReleaseError,
+    VerifiedRelease,
     load_verified_model,
     release_model,
+    verify_release,
 )
-from aisoc.owp.objects import CapabilityGrant
+from aisoc.canonical import digest, sha256_hex
+from aisoc.owp.objects import CapabilityGrant, Signed
 from aisoc.sandbox import (
     MSG_ACTION_REQUEST,
     MSG_INVESTIGATION_REPORT,
@@ -94,10 +97,69 @@ def test_soc_from_release_records_verified_manifest_and_plain_init_records_unver
     soc = AISOC.from_release(model.to_bytes(), manifest, trust, HeuristicStubAgent(clock), clock=clock)
     first = soc.ledger.entries[0]
     assert first.entry_type == "model_release" and first.refs["model_version"] == "dual_model/test"
+    assert first.refs["model_sha256"] == sha256_hex(model.to_bytes())
+    assert first.object_digest == digest({"status": "verified", "manifest": manifest.payload})
     plain = AISOC(model, HeuristicStubAgent(clock), clock=clock)
     assert plain.ledger.entries[0].entry_type == "model_release"
+    assert plain.ledger.entries[0].object_digest == digest({"status": "unverified", "model_version": "dual_model/test"})
     with pytest.raises(ModelReleaseError):
         AISOC.from_release(model.to_bytes(), manifest, TrustedKeys(), HeuristicStubAgent(clock), clock=clock)
+
+
+def test_soc_rejects_release_that_did_not_pass_the_gate(trained):
+    model, ds = trained
+    clock = Clock(start=Clock().now())
+    rel = Ed25519Signer(MODEL_RELEASE_ROLE)
+    trust = TrustedKeys()
+    trust.trust(rel)
+    manifest = release_model(model, "ds", rel, clock)
+    # a bare manifest - even a genuinely signed one - is not proof that *this* model was checked against it
+    for not_a_proof in (manifest, Signed(payload={"schema_version": "x"}, signatures=[]), {"status": "verified"}):
+        with pytest.raises(ModelReleaseError):
+            AISOC(model, HeuristicStubAgent(clock), clock=clock, release=not_a_proof)
+    # a real VerifiedRelease is bound to the model object it verified; another model cannot borrow it
+    verified = verify_release(model.to_bytes(), manifest, trust)
+    assert isinstance(verified, VerifiedRelease) and verified.model_sha256 == sha256_hex(model.to_bytes())
+    other = DualModel.train(ds.train, ds.val, model_version="dual_model/test")
+    with pytest.raises(ModelReleaseError):
+        AISOC(other, HeuristicStubAgent(clock), clock=clock, release=verified)
+    with pytest.raises(ModelReleaseError):
+        AISOC(DualModel.from_bytes(model.to_bytes()), HeuristicStubAgent(clock), clock=clock, release=verified)  # equal bytes, different object
+    ok = AISOC(verified.model, HeuristicStubAgent(clock), clock=clock, release=verified)
+    assert ok.ledger.entries[0].object_digest == digest({"status": "verified", "manifest": manifest.payload})
+    assert load_verified_model(model.to_bytes(), manifest, trust).model_version == "dual_model/test"
+
+
+def test_export_seals_trailing_entries_with_a_final_checkpoint(trained, tmp_path):
+    model, ds = trained
+    soc = _soc(model)
+    # detection-only flows append ledger entries but never trigger a per-case checkpoint
+    quiet = [x for x in ds.test if not model.decide(x).requires_agent_investigation][:5]
+    assert len(quiet) == 5
+    for f in quiet:
+        soc.ingest(f)
+        soc.clock.advance(7)
+    assert not any(r.investigated for r in soc.results)
+    assert soc.witness.checkpoints() == [] and len(soc.ledger.entries) > 1
+    soc.export(tmp_path / "run")
+    cps = soc.witness.checkpoints()
+    assert len(cps) == 1 and cps[0]["payload"]["length"] == len(soc.ledger.entries)
+    assert soc.ledger.verify_against_witness(soc.trusted) == []
+    exported = json.loads((tmp_path / "run" / "witness-checkpoints.json").read_text())
+    assert exported[-1]["payload"]["head_hash"] == soc.ledger.entries[-1].entry_hash
+    # exporting again without new entries does not add a redundant checkpoint
+    soc.export(tmp_path / "run2")
+    assert len(soc.witness.checkpoints()) == 1
+    # truncating the exported tail is now detectable offline
+    ledger = json.loads((tmp_path / "run" / "ledger.json").read_text())
+    (tmp_path / "run" / "ledger.json").write_text(json.dumps(ledger[:-1]))
+    from aisoc.cli import main
+    import io
+    from contextlib import redirect_stdout
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc = main(["verify", str(tmp_path / "run")])
+    assert rc != 0 and "truncated" in buf.getvalue()
 
 
 # ----------------------------------------------------------------------------- external branches

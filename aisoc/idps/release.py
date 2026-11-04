@@ -11,6 +11,7 @@ manifest's ``approved_by`` field.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 from ..canonical import sha256_hex
@@ -74,14 +75,34 @@ def release_model(
     return Signed(payload=payload, signatures=[signer.sign_payload(payload)])
 
 
-# ── 【老師註解】load_verified_model ──────────────────────────────
+# ── 【老師註解】VerifiedRelease ──────────────────────────────
+# 做什麼：「這個模型物件確實通過了發佈閘門」的憑證：把模型、它的簽名清單、以及驗過的 SHA-256 綁在一起。
+# 為什麼：以前 AISOC.__init__ 收的是一張「Signed 清單」——任何人造一個 Signed(payload={}, signatures=[]) 傳進去，
+#   帳本第一筆就會寫成 status=verified，但其實什麼都沒驗。現在 __init__ 只收這個型別，而這個型別只有
+#   verify_release() 會產生（verify_release 跑完五道檢查才回傳），「verified」三個字於是真的有驗證撐腰。
+# 怎麼看：frozen=True ⇒ 建好之後欄位不能改；AISOC.__init__ 還會檢查 release.model is model（同一個物件），
+#   防止「拿 A 模型的憑證給 B 模型用」。
+# 誠實提醒：Python 擋不住有心人自己呼叫 VerifiedRelease(...) 建構子；這個型別是「正確使用時不會出錯」的護欄，
+#   不是對抗同進程惡意程式碼的邊界（準則 #13）。
+# 對應：準則 #10；測試 tests/test_egress_release_grant.py::test_soc_rejects_release_that_did_not_pass_the_gate
+@dataclass(frozen=True)
+class VerifiedRelease:
+    """Proof-of-verification handle: only ``verify_release`` should construct this."""
+
+    model: DualModel
+    manifest: Signed
+    model_sha256: str
+
+
+# ── 【老師註解】verify_release / load_verified_model ──────────────
 # 做什麼：推論域載入模型前的五道檢查，任何一道不過就丟 ModelReleaseError、模型不會被建立（fail-closed）。
+#   verify_release 回傳 VerifiedRelease（模型 + 清單 + 哈希），load_verified_model 是只要模型物件時的便利包裝。
 # 為什麼：順序是「先便宜後昂貴、先信任後內容」：schema → 簽名與角色 → 哈希 → 特徵 schema → 解析後比對版本。
 #   簽名擺在哈希之前，是因為沒驗簽之前，清單裡寫的哈希本身就不可信。
 # 怎麼看：any(trusted.verify(...)) 表示多重簽名中有任一個「可信且角色正確」即可；expected_role 把角色綁死。
 # 拿掉會怎樣：少哈希檢查 ⇒ 清單合法但檔案被換；少角色檢查 ⇒ 帳本金鑰可以簽模型；少版本比對 ⇒ 清單與製品說法不一致卻放行。
 # 對應：準則 #8、#9、#10；測試 tests/test_egress_release_grant.py::test_release_gate_accepts_only_exact_signed_artefact、tests/test_egress_release_grant.py::test_soc_from_release_records_verified_manifest_and_plain_init_records_unverified
-def load_verified_model(model_bytes: bytes, manifest: Signed, trusted: TrustedKeys) -> DualModel:
+def verify_release(model_bytes: bytes, manifest: Signed, trusted: TrustedKeys) -> VerifiedRelease:
     """Fail closed: no valid manifest, wrong role, hash or schema mismatch -> no model."""
     p = manifest.payload
     # 檢查 1：清單格式
@@ -102,4 +123,9 @@ def load_verified_model(model_bytes: bytes, manifest: Signed, trusted: TrustedKe
     # 檢查 5：製品內的版本必須與清單一致
     if model.model_version != p.get("model_version"):
         raise ModelReleaseError("model_version inside the artefact differs from the manifest")
-    return model
+    return VerifiedRelease(model=model, manifest=manifest, model_sha256=actual)
+
+
+def load_verified_model(model_bytes: bytes, manifest: Signed, trusted: TrustedKeys) -> DualModel:
+    """Same five checks as ``verify_release``; returns just the model."""
+    return verify_release(model_bytes, manifest, trusted).model
