@@ -9,6 +9,10 @@ demo-output/dataset-snapshot/
 demo-output/training-run/
 demo-output/slips-run-trained/
 
-# Penetration-test scratch artifacts (large run copies, attack copies, video frames).
-# Curated evidence is committed under docs/pentest-evidence/ and docs/media/.
-demo-output/pentest/
+# Penetration-test run and attack artifacts are committed under demo-output/pentest/
+# (verify them with: python -m aisoc verify demo-output/pentest/atk-ledger  # => FAILED).
+# Only regenerable scratch is ignored: video frames (rebuilt by make_video.py) and
+# raw stderr/stdout probes that embed local absolute paths.
+demo-output/pentest/frames/
+demo-output/pentest/a6.out
+demo-output/pentest/a6.err
