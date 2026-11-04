@@ -1,0 +1,76 @@
+{
+  "feature_schema": "aisoc/features/v1",
+  "features": [
+    "log_bytes_in",
+    "log_bytes_out",
+    "out_in_byte_ratio",
+    "log_pkts_in",
+    "log_pkts_out",
+    "log_duration",
+    "log_mean_iat_ms",
+    "conn_failures",
+    "log_short_window_conns",
+    "distinct_dst_ports",
+    "login_failures",
+    "is_well_known_port"
+  ],
+  "high_confidence_normal": 0.9,
+  "known_branch": {
+    "classes": [
+      "benign",
+      "c2_beacon",
+      "exfiltration",
+      "port_scan",
+      "ssh_bruteforce"
+    ],
+    "epochs": 60,
+    "l2": 0.001,
+    "lr": 0.1,
+    "tau_k": 0.7,
+    "temperature": 0.5,
+    "type": "ovr_logistic_regression"
+  },
+  "model_version": "dual_model/synthetic-seed1",
+  "normality_branch": {
+    "n_trees": 60,
+    "quantile": 0.995,
+    "sample_size": 128,
+    "tau_a": {
+      "db": 0.6058948014426254,
+      "default": 0.6038437132710036,
+      "web": 0.5934050241559113,
+      "workstation": 0.5948698203098457
+    },
+    "type": "isolation_forest"
+  },
+  "scaler": {
+    "means": [
+      7.539389017902737,
+      6.585319493331561,
+      36.807037568204564,
+      2.925420780748435,
+      2.858320781494204,
+      2.0394269978191555,
+      4.074303784713252,
+      1.4005555555555556,
+      1.9131227879195836,
+      4.691666666666666,
+      1.2916666666666667,
+      0.9472222222222222
+    ],
+    "stds": [
+      1.5214024697954267,
+      1.8364442521323485,
+      186.49157374439696,
+      0.73952439611858,
+      1.1813664030620834,
+      1.373561898866197,
+      1.572825430136783,
+      6.93663047751356,
+      0.7930172360113301,
+      21.059273069418616,
+      7.7863306843012925,
+      0.22365167757026788
+    ]
+  }
+}
