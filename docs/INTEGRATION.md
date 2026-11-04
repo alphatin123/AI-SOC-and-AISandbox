@@ -29,6 +29,13 @@ PEP still verifies signature → binding → expiry → revocation → approval 
 nonce, and the verifier is still offline. What changes is **where detections
 and approvals come from**.
 
+For opt-in Ubuntu host blocking after external human approval, see
+[the Ubuntu deployment guide](UBUNTU_BLOCKING.zh-TW.md). The nftables backend
+is disabled by default, uses explicit tenant/resource-to-IP mappings and
+protected management networks, and does not make the reference implementation
+production-ready by itself. Existing commands remain simulated unless
+`slips-ingest --nftables-config` is explicitly supplied.
+
 ## 1. Slips → dual_model
 
 ### 1.1 Running Slips
@@ -50,6 +57,76 @@ accumulated enough threat level in a time window) and Zeek logs under
 `output/<run>/zeek_files/`.
 
 ### 1.2 Ingesting into the SOC
+
+#### Codespaces Live Sensor
+
+Use the separate live configuration rather than the PCAP-replay configuration.
+It runs Slips and its bundled Zeek with host networking, grants capture
+capabilities only to that sensor container, and mounts only `sensor-output/`.
+It does not mount SOC keys or enable the nftables executor. Run from this repo:
+
+```bash
+cd /workspaces/AI-SOC-and-AISandbox
+docker compose -f deploy/docker-compose.slips-live.yml up -d
+docker compose -f deploy/docker-compose.slips-live.yml logs --tail 40
+find "$PWD/sensor-output" -type f \( -name conn.log -o -name alerts.json \)
+```
+
+The default capture interface is `lo`, for authorized localhost traffic such as
+the dashboard and a bounded loopback ping. To select a different interface
+visible to the Docker daemon, set `AISOC_CAPTURE_INTERFACE` when starting the
+service. Host networking in Codespaces refers to the Codespace/Docker runtime,
+not your laptop or LAN. Verify that generated traffic appears in Zeek logs;
+do not infer capture success merely because the container is running.
+
+The image is pinned to the tested digest of Slips 1.1.24 and includes Zeek.
+Its live paths are `sensor-output/zeek_files/conn.log` and
+`sensor-output/alerts/alerts.json`. The analysis Redis uses port 6387; Redis
+binds to localhost and uses generated authentication. Capture excludes TCP
+ports 6379 and 6387 to avoid reprocessing the sensor's own Redis control traffic.
+The startup wrapper preserves the bundled YAML defaults and sets that filter
+through `parameters.pcapfilter`, avoiding the pinned build's `-F` quoting bug.
+No Slips web interface or Slips firewall blocking is enabled.
+
+Once those files exist, start the dashboard using these concrete repo paths:
+
+```bash
+cd /workspaces/AI-SOC-and-AISandbox
+python -m aisoc dashboard demo-output/aisoc-run \
+  --conn-log sensor-output/zeek_files/conn.log \
+  --alerts sensor-output/alerts/alerts.json \
+  --show-ips \
+  --port 8769
+```
+
+`--show-ips` is optional; addresses are masked by default. It reveals sensor IPs
+in the local dashboard only, so keep Codespaces port forwarding private. The
+Overview and Detection Cases views include a separate **Observed Traffic** tab
+with the newest up to 1,000 connection records parsed from the bounded Zeek log
+tail, including separate source/destination port columns. Case Verification is
+`NOT_INGESTED` until related Slips evidence is ingested and a signed SOC case is
+created. Raw flow observations are not detector verdicts or signed cases; they
+are not added to the ledger, sent to the agent, or eligible for response
+actions. This is not a durable copy of every packet or historical flow. The
+sensor excludes its own Redis TCP control ports from capture.
+
+Open `http://127.0.0.1:8769/#idps`. Use another port if 8769 is already in use.
+The sensor may leave the alert file unchanged when it sees no new evidence;
+`SLIPS · STALE` alone is not proof of a capture failure. Connection logs can
+also lag until flows finish or reach Zeek's protocol inactivity timeout.
+
+Sensor output may contain sensitive metadata and is excluded from Git. Keep
+dashboard port forwarding private. An empty alert stream can be normal: Slips
+need not alert on an ordinary ping. The monitoring view does not automatically
+turn packets into verified cases or authorize blocking.
+
+Stop capture when finished:
+
+```bash
+docker compose -f deploy/docker-compose.slips-live.yml down
+```
+
+#### Batch Import
 
 ```bash
 python -m aisoc slips-ingest output/<run>/alerts.json \
@@ -112,6 +189,36 @@ in `conn.log` and other windows carry only anomaly or weak-indicator evidence
 on Slips evidence alone with volumetrics marked missing.
 
 ## 2. AiSOC ↔ sandbox / ledger
+
+### Optional local Qwen investigation agent
+
+The repository's deterministic stub remains the default. To use a local
+OpenAI-compatible Qwen service, start that service separately and configure:
+
+```bash
+export AISOC_LLM_BASE_URL=http://127.0.0.1:8000/v1
+export AISOC_LLM_MODEL=qwen-agent
+export AISOC_LLM_API_KEY=local-vllm
+python -m aisoc slips-ingest sensor-output/alerts/alerts.json \
+  --conn-log sensor-output/zeek_files/conn.log \
+  --agent qwen --out demo-output/qwen-slips-run
+```
+
+`AISOC_LLM_MODEL` must equal the model server's configured served name. Use a
+checkpoint and vLLM version that actually support OpenAI chat-completions tool
+calling; the project does not assume or fetch a particular Qwen checkpoint.
+The adapter uses the Python standard library and accepts loopback HTTP(S) only
+by default, so host a service inside the same Codespace/network namespace (or
+use an explicit local tunnel bound to loopback). It does not configure GPU
+access, start vLLM, download weights or enable external API access.
+
+The model may call only `ReadOnlyTools`; tool names and argument shapes are
+allowlisted. Its final JSON is validated, cited evidence must have been read
+through a tool, and proposed actions are reconstructed from the frozen work
+order. The regular policy, approval, signer, PEP and ledger remain authoritative.
+Transport, tool-call, or output-validation failures return `undetermined` with
+no action request; there is no silent fallback to the stub. `--agent stub`
+remains the default for tests and deterministic scenarios.
 
 ### 2.1 Running AiSOC
 

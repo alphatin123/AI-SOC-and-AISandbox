@@ -1,0 +1,2 @@
+[console_scripts]
+aisoc = aisoc.cli:main

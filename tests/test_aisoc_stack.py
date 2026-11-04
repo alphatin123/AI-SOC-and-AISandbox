@@ -3,6 +3,8 @@
 import copy
 import json
 from pathlib import Path
+import subprocess
+from unittest.mock import patch
 
 import pytest
 
@@ -24,6 +26,10 @@ from aisoc.adapters.aisoc_stack import (
 from aisoc.idps import DualModel
 from aisoc.scenarios import _first_authorized, _malicious_flow, _seed_ioc, _soc
 from aisoc.simulate import generate
+from aisoc.crypto import Clock
+from aisoc.sandbox import HeuristicStubAgent
+from aisoc.sandbox.nftables import NftablesConfig, NftablesExecutor
+from aisoc.soc import AISOC
 
 BUNDLE = Path(__file__).parent / "fixtures" / "aisoc" / "investigation-bundle.json"
 
@@ -43,6 +49,62 @@ def _bridged_soc(model, auto, **cfg):
                                  sleep=lambda s: t.__setitem__(0, t[0] + 1), wait_clock=lambda: t[0])
     soc.set_approval_provider(bridge)
     return fake, soc, bridge
+
+
+def test_nftables_attachment_requires_external_approval_and_safe_pep(model):
+    clock = Clock()
+    soc = AISOC(model, HeuristicStubAgent(clock), clock=clock)
+    config = NftablesConfig(targets={}, protected_cidrs=("192.168.8.10/24",))
+    with pytest.raises(ValueError, match="external human"):
+        soc.enable_nftables(config)
+    client = AiSOCClient(AiSOCConfig(token="t"), http=FakeAiSOCServer())
+    soc.set_approval_provider(AiSOCApprovalBridge(client, soc.keys["approver"], clock))
+    soc.pep.config.single_use_nonce = False
+    with pytest.raises(ValueError, match="safety"):
+        soc.enable_nftables(config)
+    soc.pep.config.single_use_nonce = True
+    soc.enable_nftables(config)
+    assert isinstance(soc.executor, NftablesExecutor)
+    assert soc.pep.executor is soc.executor
+    assert soc.ledger.entries[-1].entry_type == "executor_configuration"
+    with pytest.raises(ValueError, match="cannot remove"):
+        soc.set_approval_provider(None)
+    from aisoc.adapters.slips import parse_alerts_json, run_slips_parsed, sample_alerts_json_lines
+
+    parsed = parse_alerts_json(sample_alerts_json_lines())
+    with pytest.raises(ValueError, match="advance_clock_s"):
+        run_slips_parsed(soc, parsed)
+    summary = run_slips_parsed(soc, parsed, advance_clock_s=0)
+    assert summary.cases > 1
+    assert not clock.frozen
+
+
+@pytest.mark.parametrize("approved, firewall_error", [(True, False), (False, False), (True, True)])
+def test_nftables_human_approval_to_signed_receipt(model, approved, firewall_error):
+    clock = Clock()
+    soc = AISOC(model, HeuristicStubAgent(clock, block_ttl_s=60), clock=clock)
+    fake = FakeAiSOCServer(auto_decide=lambda record: approved)
+    client = AiSOCClient(AiSOCConfig(token="t", approval_poll_s=0), http=fake)
+    soc.set_approval_provider(AiSOCApprovalBridge(client, soc.keys["approver"], clock))
+    flow = _malicious_flow()
+    soc.enable_nftables(NftablesConfig(
+        targets={(flow.tenant, f"host:{flow.src_host}"): "203.0.113.8"},
+        protected_cidrs=("192.168.8.10/24",), enabled=True,
+    ))
+    _seed_ioc(soc, flow)
+    error = subprocess.CalledProcessError(1, "nft") if firewall_error else None
+    with patch("aisoc.sandbox.nftables.subprocess.run", side_effect=error) as run:
+        result = soc.ingest(flow)
+    block = next(request for request in result.requests if request.action == "block_host")
+    assert block.executed is (approved and not firewall_error)
+    assert run.call_count == int(approved)
+    receipts = [entry for entry in soc.tool_log.receipts if entry.payload["action"] == "block_host"]
+    if approved:
+        assert receipts
+        assert receipts[-1].payload["outcome"] == ("rejected" if firewall_error else "executed")
+        assert soc.trusted.verify(receipts[-1].payload, receipts[-1].signatures[0], expected_role="executor")
+    else:
+        assert not receipts
 
 
 # ----------------------------------------------------------------------------- alerts

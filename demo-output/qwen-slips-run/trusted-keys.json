@@ -1,0 +1,22 @@
+{
+  "ed25519:043a3b653bcb689b839a2e774f456e6a": {
+    "public_raw_hex": "d7dffdf87fd238b7f2c08bb1c2824b68455db2062959f5a364e8e50cb1e60bb7",
+    "role": "approver"
+  },
+  "ed25519:08e291580709b3a1af72125fc051a240": {
+    "public_raw_hex": "dc8b8199152461093da771e05ea9728f4935810f4709ebdcb046435d1196009d",
+    "role": "ledger"
+  },
+  "ed25519:6baad7de4b03a09f7d4f2e681cd0108f": {
+    "public_raw_hex": "0b91ab577f196869db6ea91b6db3ff823a912fdd455f2735ac56f1ac2558f824",
+    "role": "verifier"
+  },
+  "ed25519:840c398d218b10cfbcfe3f83d364de8d": {
+    "public_raw_hex": "4864e1fb08e9e79059e03257954014d41f13e3492b2b2e5d2308ec8081868425",
+    "role": "executor"
+  },
+  "ed25519:a53fafd90d32b4d03bd5fa34c857310f": {
+    "public_raw_hex": "5bd438764e49e17ab453b11c27dc073405943375bd7663853af8d7c2d1629f6d",
+    "role": "authorizer"
+  }
+}

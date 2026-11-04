@@ -1,0 +1,36 @@
+[
+  {
+    "payload": {
+      "head_hash": "sha256:083744e4928542fd673dc7172339a7aba424a4c178d800afe0720305643caae2",
+      "issued_at": "2026-11-04T07:56:32Z",
+      "length": 6,
+      "merkle_root": "sha256:0c22e2f2f0c0f5d4328166fb1fcb5870b4364f77a0ec29b3cb6bb3be48345481",
+      "schema_version": "owp-soc/ledger-checkpoint/0.1"
+    },
+    "signatures": [
+      {
+        "alg": "Ed25519",
+        "key_id": "ed25519:08e291580709b3a1af72125fc051a240",
+        "role": "ledger",
+        "sig": "57a0a844bb4b941b0520c0982445f73f65adff0f9ff65683c20712195de65d824fefcfe96327a3673c2b20e9212cbb23c7ec4a22cb0bac9bff588625a31af403"
+      }
+    ]
+  },
+  {
+    "payload": {
+      "head_hash": "sha256:61087f11668fd387f4bed5f8eb968c16ed00c0719e564cc83986feb40f55fc59",
+      "issued_at": "2026-11-04T07:56:39Z",
+      "length": 13,
+      "merkle_root": "sha256:0c50405273be46b0884570d037d0c9adad421bb6ba0c1165035b48ffa2435a4d",
+      "schema_version": "owp-soc/ledger-checkpoint/0.1"
+    },
+    "signatures": [
+      {
+        "alg": "Ed25519",
+        "key_id": "ed25519:08e291580709b3a1af72125fc051a240",
+        "role": "ledger",
+        "sig": "59bb17a0010491b131225b752dbd0a11fe2478ff7370cef2d0d0341eb5b2866064244d3444b14e9bfcaee7d29e7f1b584e847e4a0b0e62fe67c939369bd92604"
+      }
+    ]
+  }
+]

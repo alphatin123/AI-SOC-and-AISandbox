@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any, Dict, List
+from urllib.parse import urlsplit
 
 from .canonical import digest
 from .crypto import Clock, Ed25519Signer, TrustedKeys
@@ -28,10 +30,24 @@ from .soc import AISOC
 # 為什麼：這是論文「誠實範圍」的一部分——不讓讀者把模擬結果誤讀成「對真實流量的偵測率」或「零日免疫證明」。
 # 對應：準則 #13
 DISCLAIMER = (
-    "All data is synthetic and all agents are deterministic stubs. Numbers describe this reference "
-    "implementation only; they are not detection results on real traffic, not a security certification, "
-    "and not evidence of zero-day immunity or unconditional containment."
+    "All data is synthetic unless an external sensor is explicitly selected. Numbers describe this reference "
+    "implementation only; they are not security certification or evidence of zero-day immunity or unconditional containment."
 )
+
+
+def _agent_disclaimer(agent_name: str) -> str:
+    implementation = "a deterministic heuristic stub" if agent_name == "stub" else "the explicitly configured local Qwen-compatible model"
+    return f"{DISCLAIMER} The investigation agent is {implementation}; model-generated judgments are not calibrated."
+
+
+def _make_agent(agent_name: str, clock: Clock, *, block_ttl_s: int = 3600):
+    if agent_name == "stub":
+        return HeuristicStubAgent(clock, block_ttl_s=block_ttl_s)
+    if agent_name == "qwen":
+        from services.agents.qwen import QwenFunctionCallingAgent
+
+        return QwenFunctionCallingAgent.from_env(clock, block_ttl_s=min(block_ttl_s, 900))
+    raise ValueError(f"unsupported investigation agent: {agent_name}")
 
 
 # ── 【老師註解】_train ───────────────────────────────────────────
@@ -55,7 +71,7 @@ def _train(seed: int, held_out: str | None = None) -> tuple[DualModel, Any]:
 def cmd_simulate(args: argparse.Namespace) -> int:
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    report: Dict[str, Any] = {"disclaimer": DISCLAIMER, "seed": args.seed}
+    report: Dict[str, Any] = {"disclaimer": _agent_disclaimer(args.agent), "agent": args.agent, "seed": args.seed}
 
     # 步驟 1/4：依時間順序切分（訓練在前、測試在後），避免「用未來預測過去」的洩漏
     print("1/4 training dual_model on time-ordered synthetic split ...")
@@ -78,9 +94,10 @@ def cmd_simulate(args: argparse.Namespace) -> int:
     report["leave_one_family_out"] = lofo
 
     # 步驟 3/4：模型先走簽名發佈閘門才能載入；再把測試流量逐筆餵進 SOC，最後把帳本／見證／收據匯出到 out
-    print("3/4 running SOC pipeline with heuristic agent (model loaded through the signed release gate) ...")
+    print(f"3/4 running SOC pipeline with {args.agent} agent (model loaded through the signed release gate) ...")
     clock = Clock(start=Clock().now())
-    soc, manifest = _release_and_load(model, ds, clock, report["detection_time_split"], lofo)
+    agent = _make_agent(args.agent, clock)
+    soc, manifest = _release_and_load(model, ds, clock, report["detection_time_split"], lofo, agent=agent)
     report["model_release"] = manifest.payload
     _seed_synthetic_context(soc, ds.test[: args.max_cases], args.seed)
     n = 0
@@ -123,7 +140,7 @@ def cmd_simulate(args: argparse.Namespace) -> int:
 # 怎麼看：trust 裡只放 release_signer 一把鑰匙，示範「一角色一鑰匙」；manifest.payload 後面會被原封寫進 report。
 # 拿掉會怎樣：任何人把模型檔換掉，推論端照樣載入，偵測結果就不再可追溯。
 # 對應：準則 #9、#10；測試 tests/test_egress_release_grant.py::test_release_gate_accepts_only_exact_signed_artefact、::test_soc_from_release_records_verified_manifest_and_plain_init_records_unverified
-def _release_and_load(model: DualModel, ds: Any, clock: Clock, metrics: Dict[str, Any], lofo: Dict[str, Any]) -> tuple[AISOC, Any]:
+def _release_and_load(model: DualModel, ds: Any, clock: Clock, metrics: Dict[str, Any], lofo: Dict[str, Any], block_ttl_s: int = 3600, agent: Any = None) -> tuple[AISOC, Any]:
     """Training-domain step: sign a release manifest; inference-domain step: load only if it verifies."""
     # 訓練域：建立發佈角色的鑰匙，並把它（只有它）放進推論端的信任清單
     release_signer = Ed25519Signer(MODEL_RELEASE_ROLE)
@@ -138,7 +155,8 @@ def _release_and_load(model: DualModel, ds: Any, clock: Clock, metrics: Dict[str
     }
     manifest = release_model(model, dataset_digest, release_signer, clock, approved_by="simulated-release-board", evaluation=evaluation)
     # 推論域：只給「位元組 + manifest + 信任清單」，from_release 內部驗簽名、比雜湊，不過就拒載
-    soc = AISOC.from_release(model.to_bytes(), manifest, trust, HeuristicStubAgent(clock), clock=clock)
+    soc = AISOC.from_release(model.to_bytes(), manifest, trust,
+                             agent or HeuristicStubAgent(clock, block_ttl_s=block_ttl_s), clock=clock)
     return soc, manifest
 
 
@@ -154,22 +172,57 @@ def cmd_slips_ingest(args: argparse.Namespace) -> int:
     """Run Slips alerts.json (IDMEFv2) through the SOC as the external known/anomaly branch."""
     from .adapters.slips import run_slips_alerts
 
+    firewall = None
+    firewall_path = getattr(args, "nftables_config", None)
+    if firewall_path:
+        from .sandbox.nftables import NftablesConfig
+
+        try:
+            config = json.loads(Path(firewall_path).read_text(encoding="utf-8"))
+            targets = {(entry["tenant"], entry["resource"]): entry["ip"] for entry in config["targets"]}
+            if len(targets) != len(config["targets"]):
+                raise ValueError("duplicate tenant/resource targets")
+            firewall = NftablesConfig(
+                targets=targets, protected_cidrs=tuple(config["protected_cidrs"]),
+                enabled=config.get("enabled", False), max_ttl_s=config.get("max_ttl_s", 900),
+            )
+            endpoint = urlsplit(args.approval_base_url)
+            if (endpoint.scheme not in ("http", "https") or not endpoint.hostname
+                    or endpoint.username or endpoint.password
+                    or (endpoint.scheme == "http" and endpoint.hostname not in ("localhost", "127.0.0.1", "::1"))):
+                raise ValueError("approval API requires HTTPS or loopback HTTP without URL credentials")
+            if not os.environ.get("AISOC_TOKEN"):
+                raise ValueError("AISOC_TOKEN is required for external human approval")
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            print(f"nftables configuration refused: {exc}", file=sys.stderr)
+            return 1
+
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     print("training dual_model on synthetic data (only its release gate and thresholds are used; the internal "
           f"normality model is {'ENABLED' if args.internal_normality else 'disabled'} for real traffic) ...")
     model, ds = _train(args.seed)
-    clock = Clock(start=Clock().now())
+    clock = Clock() if firewall is not None else Clock(start=Clock().now())
     metrics = detection_metrics(model, ds.test)
     # 即使是真實資料，模型一樣要走簽名發佈閘門才載入
-    soc, manifest = _release_and_load(model, ds, clock, metrics, {})
+    agent = _make_agent(args.agent, clock, block_ttl_s=firewall.max_ttl_s if firewall is not None else 3600)
+    soc, manifest = _release_and_load(model, ds, clock, metrics, {},
+                                      block_ttl_s=firewall.max_ttl_s if firewall is not None else 3600,
+                                      agent=agent)
+    if firewall is not None:
+        from .adapters.aisoc_stack import AiSOCApprovalBridge, AiSOCClient, AiSOCConfig
+
+        client = AiSOCClient(AiSOCConfig(base_url=args.approval_base_url, token=os.environ["AISOC_TOKEN"]))
+        soc.set_approval_provider(AiSOCApprovalBridge(client, soc.keys["approver"], clock))
+        soc.enable_nftables(firewall)
     # 核心：解析 alerts.json（+ conn.log），每個 (來源 IP, 時間窗) 成一案，走完整 SOC 管線
     summ = run_slips_alerts(soc, args.alerts, tenant=args.tenant, conn_log=args.conn_log,
-                            use_internal_normality=args.internal_normality, tau_k=args.tau_k)
+                            use_internal_normality=args.internal_normality, tau_k=args.tau_k,
+                            advance_clock_s=0 if firewall is not None else 7.0)
     # 匯出帳本等檔案，之後可用 `python -m aisoc verify <out>` 離線重驗
     soc.export(out)
     cases = summ.export_cases()
-    summary = {"disclaimer": DISCLAIMER + " Slips confidences are not calibrated probabilities; tau_k is a deployment setting.",
+    summary = {"disclaimer": _agent_disclaimer(args.agent) + " Slips confidences are not calibrated probabilities; tau_k is a deployment setting.",
                "source": {"alerts": str(args.alerts), "conn_log": str(args.conn_log) if args.conn_log else None,
                           "slips_versions": summ.slips_versions},
                "model_release": manifest.payload, **summ.to_dict(), "case_results": cases}
@@ -409,6 +462,8 @@ def main(argv: List[str] | None = None) -> int:
     s.add_argument("--out", default="demo-output/aisoc-run")
     s.add_argument("--seed", type=int, default=1)
     s.add_argument("--max-cases", type=int, default=200)
+    s.add_argument("--agent", choices=("stub", "qwen"), default="stub",
+                   help="investigation agent; qwen uses an explicitly configured loopback OpenAI-compatible endpoint")
     s.set_defaults(fn=cmd_simulate)
     # verify：唯一參數是匯出目錄
     v = sub.add_parser("verify", help="offline verification of an exported run directory")
@@ -421,9 +476,15 @@ def main(argv: List[str] | None = None) -> int:
     si.add_argument("--tenant", default="tenant-slips")
     si.add_argument("--out", default="demo-output/slips-run")
     si.add_argument("--seed", type=int, default=1)
+    si.add_argument("--agent", choices=("stub", "qwen"), default="stub",
+                    help="investigation agent; qwen uses an explicitly configured loopback OpenAI-compatible endpoint")
     si.add_argument("--tau-k", type=float, default=0.5, help="min Slips confidence for the known branch to accept a class")
     si.add_argument("--internal-normality", action="store_true",
                     help="score real flows with the synthetic-trained normality model (only meaningful after retraining on your own baseline)")
+    si.add_argument("--nftables-config", default=None,
+                    help="explicit administrator configuration for Ubuntu host blocking; requires external human approval")
+    si.add_argument("--approval-base-url", default="http://127.0.0.1:8000",
+                    help="human approval API used with --nftables-config; token comes from AISOC_TOKEN")
     si.set_defaults(fn=cmd_slips_ingest)
     # aisoc-bundle-verify：bundle 路徑必填；--hmac-key 選填（沒給就只驗 sha256，並在 stderr 提醒其限制）
     bv = sub.add_parser("aisoc-bundle-verify", help="re-derive the integrity fields of an AiSOC investigation bundle")
@@ -439,6 +500,17 @@ def main(argv: List[str] | None = None) -> int:
     ap_push.add_argument("--dry-run", action="store_true", help="print the events that would be posted; no network")
     ap_push.set_defaults(fn=cmd_aisoc_push)
     # 解析完直接呼叫對應的 cmd_* 函式，回傳碼原樣交給 sys.exit
+    dashboard = sub.add_parser("dashboard", help="local evidence dashboard with analyst case classifications")
+    dashboard.add_argument("run_dir", nargs="?", default="demo-output/aisoc-run")
+    dashboard.add_argument("--port", type=int, default=8765)
+    dashboard.add_argument("--conn-log", default=None, help="actively written Zeek conn.log for read-only IDPS monitoring")
+    dashboard.add_argument("--alerts", default=None, help="actively written Slips alerts.json for read-only IDPS monitoring")
+    dashboard.add_argument("--show-ips", action="store_true", help="show unmasked sensor IPs in the loopback-only dashboard")
+    def run_dashboard(args: argparse.Namespace) -> int:
+        from .dashboard import serve
+        return serve(args.run_dir, args.port, conn_log=args.conn_log, alerts=args.alerts,
+                 reveal_ips=args.show_ips)
+    dashboard.set_defaults(fn=run_dashboard)
     args = ap.parse_args(argv)
     return args.fn(args)
 

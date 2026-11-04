@@ -1,0 +1,34 @@
+services:
+  slips-live:
+    image: stratosphereips/slips@sha256:110676362ed3129ba330a8c5acd480e454aa60499e608e3d15faf8a066b22bed
+    working_dir: /StratosphereLinuxIPS
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    volumes:
+      - ../sensor-output:/StratosphereLinuxIPS/output
+    entrypoint:
+      - python3
+      - -c
+      - |
+        import os
+        import sys
+        from pathlib import Path
+        import yaml
+
+        config = yaml.safe_load(Path("config/slips.yaml").read_text())
+        config["parameters"]["pcapfilter"] = "not (tcp port 6379 or tcp port 6387)"
+        config_path = Path("/tmp/aisoc-slips-live.yaml")
+        config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+        arguments = [*sys.argv[1:], "-c", str(config_path)]
+        os.execvp(arguments[0], arguments)
+    command:
+      - ./slips.py
+      - -i
+      - ${AISOC_CAPTURE_INTERFACE:-lo}
+      - -o
+      - output/
+      - -P
+      - "6387"
+    restart: "no"

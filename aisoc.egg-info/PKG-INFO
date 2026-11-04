@@ -1,0 +1,10 @@
+Metadata-Version: 2.4
+Name: aisoc
+Version: 0.1.0
+Summary: AI-IDPS (dual_model) + constrained Agent sandbox + OpenWorkProof-aligned verifiable evidence chain
+Requires-Python: >=3.10
+License-File: LICENSE
+Requires-Dist: cryptography>=42
+Provides-Extra: test
+Requires-Dist: pytest>=8; extra == "test"
+Dynamic: license-file

@@ -127,8 +127,11 @@ class HeuristicStubAgent:
 
     name = "heuristic-stub"
 
-    def __init__(self, clock: Clock) -> None:
+    def __init__(self, clock: Clock, block_ttl_s: int = 3600) -> None:
         self.clock = clock
+        if type(block_ttl_s) is not int or block_ttl_s <= 0:
+            raise ValueError("block_ttl_s must be a positive integer")
+        self.block_ttl_s = block_ttl_s
 
     # ── 【老師註解】HeuristicStubAgent.investigate ─────────────────
     # 做什麼：三步取證（流量 → 主機視窗 → IOC），再用五個結構化條件加總成 score，依 score 決定建議：
@@ -189,7 +192,7 @@ class HeuristicStubAgent:
         if score >= 4 and host:
             verdict, action = "malicious", ACTION_BLOCK_HOST
             requests.append(_mk_request(order, ACTION_BLOCK_HOST, f"host:{host}", self.clock,
-                                        params={"ttl_s": 3600, "reversible": True}))
+                                        params={"ttl_s": self.block_ttl_s, "reversible": True}))
         elif score >= 2 and host:
             verdict, action = "suspicious", ACTION_ADD_WATCHLIST
             requests.append(_mk_request(order, ACTION_ADD_WATCHLIST, f"host:{host}", self.clock,

@@ -84,9 +84,16 @@ known-branch claim; the Slips evidence `Description` is only ever an
   `ActionRequest` whose action must be in the `WorkOrder` vocabulary.
 * `tools.py` – tenant-scoped read-only tools with a per-case budget and an
   independent `ToolSideLog` (second record used for reconciliation).
-* `agent.py` – `HeuristicStubAgent` (decides from fields, never from free text)
-  and `InjectionFollowingStubAgent` (deliberately obeys injected text, used to
-  test L1). Agents cannot: modify policy, write training labels, disable audit,
+* `agent.py` – `HeuristicStubAgent` (the deterministic default),
+  `InjectionFollowingStubAgent` (deliberately obeys injected text, used to test
+  L1), and the `InvestigationAgent` protocol. Optional
+  `services/agents/qwen.py` calls a loopback OpenAI-compatible Qwen service.
+  It can invoke only the four registered read-only tools; proposed actions are
+  rebuilt locally and still pass task/grant/runtime policy, human approval,
+  signing and PEP. Model/tool/JSON failures produce `undetermined` with no
+  action, never a stub fallback. The Qwen service is selected explicitly with
+  `--agent qwen`; tests, scenarios and default commands remain deterministic
+  stubs. Agents cannot modify policy, write training labels, disable audit, or
   export raw telemetry (`FORBIDDEN_FOR_AGENT`).
 * `egress.py` – `ControlledEgressProxy`, the sandbox's single channel out.
   Message types are allow-listed (`investigation_report`, `action_request`),

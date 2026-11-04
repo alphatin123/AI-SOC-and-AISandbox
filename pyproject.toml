@@ -16,7 +16,10 @@ test = ["pytest>=8"]
 aisoc = "aisoc.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["aisoc*"]
+include = ["aisoc*", "services*"]
+
+[tool.setuptools.package-data]
+aisoc = ["dashboard.html", "lucide.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

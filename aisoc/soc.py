@@ -59,6 +59,7 @@ from .sandbox import (
     ToolSideLog,
     build_approval_view,
 )
+from .sandbox.nftables import NftablesConfig, NftablesExecutor
 
 HumanPolicy = Callable[[ApprovalView], Tuple[bool, str]]
 # Produces a *signed* HumanApproval for a reserved request. The default wraps the local
@@ -420,7 +421,31 @@ class AISOC:
 
     def set_approval_provider(self, provider: Optional[ApprovalProvider]) -> None:
         """Route reserved actions to an external approval system (e.g. the AiSOC inbox bridge)."""
+        if provider is None and isinstance(self.executor, NftablesExecutor):
+            raise ValueError("cannot remove external human approval while nftables is attached")
         self._approval_provider = provider
+
+    def enable_nftables(self, config: NftablesConfig) -> None:
+        """Explicitly attach host blocking after configuring external human approval."""
+        if self._approval_provider is None:
+            raise ValueError("nftables requires an external human approval provider")
+        if not all(value is True for value in vars(self.pep.config).values()):
+            raise ValueError("all PEP safety checks must be enabled")
+        if self.clock.frozen:
+            raise ValueError("nftables requires a real-time clock, not a simulation clock")
+        if self.results or self.pep._idem:
+            raise ValueError("attach nftables before processing cases")
+        executor = NftablesExecutor(self.keys["executor"], self.clock, config)
+        self.ledger.append("executor_configuration", "-", {
+            "backend": "nftables", "enabled": config.enabled,
+            "configuration_digest": digest({
+                "targets": [{"tenant": tenant, "resource": resource, "ip": address}
+                            for (tenant, resource), address in sorted(config.targets.items())],
+                "protected_cidrs": list(config.protected_cidrs), "max_ttl_s": config.max_ttl_s,
+            }),
+        })
+        self.executor = executor
+        self.pep.executor = executor
 
     # ── 【老師註解】AISOC.anchor_external_evidence ────────────────
     # 做什麼：把外部系統（AiSOC）證據包的指紋寫進帳本，並「立刻」做一次檢查點送外部見證。

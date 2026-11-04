@@ -1,5 +1,7 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+.dashboard-reviews.sqlite3*
+sensor-output/
 demo-output/aisoc-run/
 demo-output/slips-run/

@@ -2,7 +2,7 @@
 
 > 這份指南假設你是**第一次**接觸這個專案、也第一次接觸「密碼學帳本」這類東西。
 > 我會像老師一樣，每一步先告訴你「要做什麼、為什麼、預期看到什麼、看到別的代表什麼」。
-> 全部指令都在這個 repo 的根目錄執行，全部輸出都是我實際跑出來的，不是想像的。
+> 除非另有說明，指令都在這個 repo 的根目錄執行。範例輸出供判讀使用，筆數、識別碼與執行時間可能隨版本而異。
 
 ---
 
@@ -12,6 +12,7 @@
 |---|---|
 | 10 分鐘弄懂這套系統在防什麼 | §1、§2 |
 | 把軟體跑起來、看到結果 | §4、§5 |
+| Ubuntu 主機經真人核准後實際封鎖來源 IP | [Ubuntu 封鎖部署說明](UBUNTU_BLOCKING.zh-TW.md)；預設停用，先在隔離主機驗收 |
 | 看懂跑出來的檔案 | §6 |
 | 親手證明「改一個字元就會被抓到」 | §7 |
 | 讀程式碼、判斷每個函數是不是真的在做它說的事 | §8 |
@@ -95,7 +96,7 @@ JCS 的規則：鍵按字典序排序、沒有多餘空白、數字用固定格�
 
 **Merkle 根 + 外部見證**：每個案件結束時，帳本把目前全部記錄算成一個 Merkle 根，用 `ledger` 鑰匙簽名，交給**帳本管理員管不到的**外部見證（準則 #7）。之後就算整條鏈被重寫，也對不上見證保存的根與長度 → 「truncated below witnessed length 464」。
 
-**沒有見證時**，驗證器不會說「通過」，只會說 `UNKNOWN`（準則 #8）——因為它無法排除整條鏈被重寫的可能。
+**沒有見證且其餘完整性檢查通過時**，驗證器不會說「通過」，只會說 `UNKNOWN`（準則 #8）——因為它無法排除整條鏈被重寫的可能。若帳本已損壞，仍會回傳 `FAILED`。
 
 → 程式碼：`aisoc/owp/ledger.py::HashChainLedger`、`merkle_root`、`ExternalWitness`；`aisoc/owp/verifier.py::Verifier.verify_case`
 
@@ -173,8 +174,18 @@ git clone https://github.com/alphatin123/AI-SOC-and-AISandbox.git
 cd AI-SOC-and-AISandbox
 git checkout feat/slips-aisoc-adapters     # PR #5 的分支；合併後用 main 即可
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -r requirements.txt            # 只有兩個套件：cryptography、pytest
+python -m pip install -e '.[test]'          # 安裝本專案、cryptography 與 pytest
 ```
+
+`-e` 是可編輯安裝：使用同一個 Python 環境時，即使切換到 `demo-output/aisoc-run`，仍可執行 `python -m aisoc`。只安裝 `requirements.txt` 不會安裝本專案；若出現 `No module named aisoc`，請用發生錯誤的那個 Python 在 repo 根目錄執行上面的安裝指令。
+
+**先確認所在目錄**：`pwd` 應指向 repo 根目錄，而不是 `demo-output/aisoc-run`。在此 Codespace 可以執行：
+
+```bash
+cd /workspaces/AI-SOC-and-AISandbox
+```
+
+其他環境請換成自己的 repo 路徑。套件安裝後能從任何目錄匯入，但 `tests/...`、`demo-output/...` 這類相對路徑仍以目前所在目錄為準。
 
 為什麼依賴這麼少？因為 dual_model 是純 Python 寫的邏輯迴歸 + Isolation Forest（在 `aisoc/idps/`），故意不用 PyTorch——**重點不是模型多強，而是模型周圍的治理鏈條**。
 
@@ -200,6 +211,14 @@ python -m pytest -q
 **怎麼判讀**：85 個測試涵蓋 §3 表中每一條準則。任何一個失敗都代表某條保證在你的環境不成立——**先停下來**。
 
 **出錯怎麼辦**：`ModuleNotFoundError: cryptography` → 沒裝依賴或沒啟用 venv。
+
+若看到 `file or directory not found: tests/...`，請先回 repo 根目錄。也可以在此 Codespace 的任何目錄用絕對路徑執行單一測試：
+
+```bash
+python -m pytest -q /workspaces/AI-SOC-and-AISandbox/tests/test_policy_pep.py::test_pep_happy_path_then_replay_and_tamper
+```
+
+這個單一測試已實測通過（`1 passed`）；不代表已執行完整測試套件。
 
 ### 步驟 2：跑完整模擬
 
@@ -280,6 +299,15 @@ cat demo-output/aisoc-run/report.md
 python -m aisoc verify demo-output/aisoc-run
 ```
 
+`verify` 的參數是**輸出目錄**，不是 `ledger.json`，因為還需要讀取公鑰、見證與收據。如果已經在 `demo-output/aisoc-run` 裡，請改用：
+
+```bash
+python -m aisoc verify .
+echo "exit=$?"
+```
+
+若指定的目錄不存在或缺檔，可能看到 `FileNotFoundError`；這是檔案路徑問題，不是驗證結論。若看到 `chain broken at 5`，代表帳本第 5 筆的完整性檢查失敗，不是匯入或目錄問題。不要改寫雜湊來「修好」證據，請保留原檔，另產生乾淨資料做練習（見 §7）。
+
 **預期輸出**：
 ```json
 {
@@ -297,7 +325,7 @@ python -m aisoc verify demo-output/aisoc-run
 - `receipts: 23`：執行器簽的收據，每一張都要能對到一筆 `authorization` 帳本記錄——對不到就是「繞過帳本執行」。
 - 驗證器做了什麼：重算哈希鏈 → 用 `trusted-keys.json` 裡 `ledger` 的公鑰驗每個檢查點簽名 → 比對 Merkle 根 → 驗每張收據的 `executor` 簽名 → 對賬收據 vs 授權 → 對賬動作請求 vs 出口紀錄。
 
-**三種狀態**：`VERIFIED`（exit 0）/ `UNKNOWN`（見證缺失，exit 1）/ `FAILED`（找到竄改，exit 1）。§7 會讓你親手製造後兩種。
+**三種狀態**：`VERIFIED`（exit 0）/ `UNKNOWN`（見證缺失且其餘檢查通過，exit 1）/ `FAILED`（發現完整性問題，exit 1）。`FAILED` 優先於 `UNKNOWN`；§7 會讓你親手製造後兩種。
 
 ### 步驟 5：把 Slips 的真實告警格式餵進同一條管線
 
@@ -451,21 +479,37 @@ rm -rf demo-output/     # 已在 .gitignore，不會被 commit
 
 ---
 
-## 7. 動手破壞它（每個練習都附我實際跑出的輸出）
+## 7. 動手破壞它（每個練習都附預期輸出）
 
-> 先複製一份，不要改原本的：`cp -r demo-output/aisoc-run /tmp/x`
+先建立**全新且已驗證**的暫存基準，不使用可能已被前一次練習改壞的 `demo-output/aisoc-run`。完成 §4 的套件安裝後，以下指令可從任何目錄執行，不會覆寫 repo 內的資料：
+
+```bash
+demo_root=$(mktemp -d /tmp/aisoc-exercises.XXXXXX)
+python -m aisoc simulate --out "$demo_root/baseline" &&
+python -m aisoc verify "$demo_root/baseline"
+```
+
+**只有基準顯示 `VERIFIED` 且 exit 0，才繼續。** 在同一個終端機執行後續練習，保留 `demo_root` 變數。每個練習都另建目錄，避免重複 `cp -r` 到既有目錄造成巢狀複製。
+
+若 `cp` 顯示 `cannot stat 'demo-output/aisoc-run'`，表示目前目錄下沒有這個相對路徑；不要繼續驗證不存在的副本。請回 repo 根目錄，或使用以下暫存基準的路徑。
 
 ### 練習 A：改帳本一個字元
 
 ```bash
-python - <<'EOF'
+tamper_dir=$(mktemp -d "$demo_root/tamper.XXXXXX")
+cp -r "$demo_root/baseline/." "$tamper_dir/" &&
+python - "$tamper_dir" <<'EOF'
 import json
-L = json.load(open('/tmp/x/ledger.json'))
-d = L[5]['object_digest']
-L[5]['object_digest'] = d[:-1] + ('0' if d[-1] != '0' else '1')   # 只改最後一個字元
-json.dump(L, open('/tmp/x/ledger.json', 'w'), indent=2)
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1]) / "ledger.json"
+entries = json.loads(path.read_text())
+original = entries[5]["object_digest"]
+entries[5]["object_digest"] = original[:-1] + ("0" if original[-1] != "0" else "1")
+path.write_text(json.dumps(entries, indent=2))
 EOF
-python -m aisoc verify /tmp/x; echo "exit=$?"
+python -m aisoc verify "$tamper_dir"; echo "exit=$?"
 ```
 ```json
 {"status": "FAILED", "entries": 472, "checkpoints": 23, "receipts": 23,
@@ -477,12 +521,18 @@ exit=1
 ### 練習 B：刪掉最後 10 筆（截斷）
 
 ```bash
-cp -r demo-output/aisoc-run /tmp/y
-python - <<'EOF'
+truncated_dir=$(mktemp -d "$demo_root/truncated.XXXXXX")
+cp -r "$demo_root/baseline/." "$truncated_dir/" &&
+python - "$truncated_dir" <<'EOF'
 import json
-L = json.load(open('/tmp/y/ledger.json')); json.dump(L[:-10], open('/tmp/y/ledger.json', 'w'), indent=2)
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1]) / "ledger.json"
+entries = json.loads(path.read_text())
+path.write_text(json.dumps(entries[:-10], indent=2))
 EOF
-python -m aisoc verify /tmp/y; echo "exit=$?"
+python -m aisoc verify "$truncated_dir"; echo "exit=$?"
 ```
 ```json
 {"status": "FAILED", "entries": 462, ...,
@@ -495,14 +545,19 @@ exit=1
 ### 練習 C：拿掉外部見證
 
 ```bash
-cp -r demo-output/aisoc-run /tmp/z && echo "[]" > /tmp/z/witness-checkpoints.json
-python -m aisoc verify /tmp/z; echo "exit=$?"
+no_witness_dir=$(mktemp -d "$demo_root/no-witness.XXXXXX")
+cp -r "$demo_root/baseline/." "$no_witness_dir/" &&
+printf '[]\n' > "$no_witness_dir/witness-checkpoints.json" &&
+python -m aisoc verify "$no_witness_dir"
+echo "exit=$?"
 ```
 ```json
 {"status": "UNKNOWN", "entries": 472, "checkpoints": 0, "receipts": 23, "problems": []}
 exit=1
 ```
 **判讀**：`problems` 是空的、鏈也完整，但驗證器**拒絕說 VERIFIED**——因為它無法排除整條鏈被重寫（準則 #8）。這就是「沒有證據 ≠ 沒有問題」在程式碼裡的樣子。
+
+如果結果仍是 `FAILED` 且包含 `chain broken at 5`，代表你複製的是已被改動的帳本；拿掉見證不會讓既有完整性錯誤消失。請重新建立並驗證上面的暫存基準，不要覆寫原本的損壞資料。
 
 ### 練習 D：試著讓測試失敗
 

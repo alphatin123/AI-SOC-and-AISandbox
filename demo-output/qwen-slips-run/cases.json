@@ -1,0 +1,88 @@
+[
+  {
+    "acceptance_status": "ACCEPTED",
+    "case_id": "case-98a8b4500c91",
+    "decision": {
+      "anomaly_high": true,
+      "anomaly_score": 0.1,
+      "anomaly_threshold": 0.1,
+      "feature_schema": "aisoc/features/v1",
+      "flow_id": "slips:::1:tw1",
+      "known_label": "unclassified",
+      "known_rejected": true,
+      "known_score": 1.0,
+      "model_version": "dual_model/synthetic-seed1+slips/conn_analyzer+ml_linear_model+ml_online_model",
+      "reasons": [
+        "known branch rejected",
+        "anomaly 0.100 >= tau_a 0.100 (slips/ml_online_model)"
+      ],
+      "requires_agent_investigation": true,
+      "requires_human_review": true,
+      "status": "SUSPECTED_UNKNOWN",
+      "tenant": "tenant-slips"
+    },
+    "deduplicated": false,
+    "egress_dropped": [],
+    "flow_id": "slips:::1:tw1",
+    "investigated": true,
+    "report": {
+      "case_id": "case-98a8b4500c91",
+      "evidence_ids": [],
+      "injection_flags_seen": [],
+      "missing_evidence": [
+        "local_model_inference"
+      ],
+      "narrative": "Local Qwen inference unavailable or invalid (URLError); no action requested.",
+      "proposed_requests": [],
+      "recommended_action": "none",
+      "self_reported_confidence": 0.0,
+      "verdict": "undetermined"
+    },
+    "requests": [],
+    "verification_findings": [],
+    "verification_status": "VERIFIED"
+  },
+  {
+    "acceptance_status": "ACCEPTED",
+    "case_id": "case-7286eae34aa2",
+    "decision": {
+      "anomaly_high": true,
+      "anomaly_score": 0.1,
+      "anomaly_threshold": 0.1,
+      "feature_schema": "aisoc/features/v1",
+      "flow_id": "slips:127.0.0.1:tw1",
+      "known_label": "unclassified",
+      "known_rejected": true,
+      "known_score": 1.0,
+      "model_version": "dual_model/synthetic-seed1+slips/conn_analyzer+http_analyzer+ml_linear_model",
+      "reasons": [
+        "known branch rejected",
+        "anomaly 0.100 >= tau_a 0.100 (slips/ml_linear_model)"
+      ],
+      "requires_agent_investigation": true,
+      "requires_human_review": true,
+      "status": "SUSPECTED_UNKNOWN",
+      "tenant": "tenant-slips"
+    },
+    "deduplicated": false,
+    "egress_dropped": [],
+    "flow_id": "slips:127.0.0.1:tw1",
+    "investigated": true,
+    "report": {
+      "case_id": "case-7286eae34aa2",
+      "evidence_ids": [],
+      "injection_flags_seen": [],
+      "missing_evidence": [
+        "local_model_inference"
+      ],
+      "narrative": "Local Qwen inference unavailable or invalid (URLError); no action requested.",
+      "proposed_requests": [],
+      "recommended_action": "none",
+      "self_reported_confidence": 0.0,
+      "verdict": "undetermined"
+    },
+    "requests": [],
+    "verification_findings": [],
+    "verification_status": "VERIFIED"
+  }
+]

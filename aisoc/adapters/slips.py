@@ -41,6 +41,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple, Un
 from ..canonical import digest
 from ..idps import ExternalAnomaly, ExternalKnown, FlowRecord
 from ..soc import AISOC, CaseResult
+from ..sandbox.nftables import NftablesExecutor
 
 # ── 【老師註解】aisoc/adapters/slips.py（模組總覽）────────────────
 # 做什麼：把 Slips（Stratosphere Linux IPS，一套開源的行為式入侵偵測系統）寫出來的檔案，翻譯成論文裡
@@ -392,11 +393,15 @@ class ZeekConnIndex:
     #         若讀不到 #fields 標頭，TSV 資料行會全部跳過，索引為空 → 所有量化欄位維持 None（這是安全的一邊）。
     @classmethod
     def load(cls, path: Union[str, Path]) -> "ZeekConnIndex":
-        idx = cls()
         text = Path(path).read_text(encoding="utf-8", errors="replace")
+        return cls.from_lines(text.splitlines())
+
+    @classmethod
+    def from_lines(cls, lines: Iterable[str]) -> "ZeekConnIndex":
+        idx = cls()
         fields: Optional[List[str]] = None
         sep = "\t"
-        for line in text.splitlines():
+        for line in lines:
             if not line.strip():
                 continue
             # 註解行：只關心 #fields（欄位名）與 #separator（分隔符），其他 # 行跳過
@@ -417,6 +422,8 @@ class ZeekConnIndex:
                 vals = line.split(sep)
                 row = {k: (None if v in ("-", "(empty)") else v) for k, v in zip(fields, vals)}
             else:
+                continue
+            if not isinstance(row, dict):
                 continue
             uid = row.get("uid")
             if uid:
@@ -700,6 +707,8 @@ def run_slips_parsed(
     tau_k: float = 0.5,
     advance_clock_s: float = 7.0,
 ) -> SlipsRunSummary:
+    if isinstance(soc.executor, NftablesExecutor) and advance_clock_s != 0:
+        raise ValueError("nftables ingestion must use advance_clock_s=0")
     adapter = SlipsAdapter(tenant, conn_index, tau_k=tau_k)
     cases = adapter.build_cases(parsed)
     results: List[CaseResult] = []
@@ -712,7 +721,8 @@ def run_slips_parsed(
         status_counts[res.decision.status.value] = status_counts.get(res.decision.status.value, 0) + 1
         families[c.known.label] = families.get(c.known.label, 0) + 1
         # 撥快時鐘，避免去重視窗把不同案子合併
-        soc.clock.advance(advance_clock_s)
+        if advance_clock_s:
+            soc.clock.advance(advance_clock_s)
     return SlipsRunSummary(
         evidence=len(parsed.evidence),
         incidents=len(parsed.incidents),
