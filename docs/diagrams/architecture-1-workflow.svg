@@ -1,0 +1,190 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080"><title>圖 1 系統工作流程架構圖</title><defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#1F2933"/></marker><marker id="arrow-grey" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#37474F"/></marker></defs><rect width="1920" height="1080" fill="#FFFFFF"/><text x="960.0" y="38.0" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="28" font-weight="bold" fill="#1F2933" text-anchor="middle">圖 1　系統工作流程架構圖：AI-SOC（偵測）× AI-Sandbox（處置）× OWP 帳本（問責）</text>
+<text x="960.0" y="64.0" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="15" font-weight="normal" fill="#5B6770" text-anchor="middle">對應論文「架構一：dual_model 訓練與推理」與 Table III；方框右下為程式路徑。實線＝資料流／控制流，虛線＝寫入帳本。</text>
+<rect x="28.0" y="84.0" width="880.0" height="768.0" rx="16" fill="#EEF4FB" stroke="#2F5FA7" stroke-width="2.5"/>
+<text x="46.0" y="114.0" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="22" font-weight="bold" fill="#2F5FA7" text-anchor="start">第一部分　AI-SOC：偵測（Detection）</text>
+<text x="470.0" y="114.0" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#5B6770" text-anchor="start">線上感測 → 離線訓練域 → 沙箱內 dual_model 推理</text>
+<rect x="44.0" y="124.0" width="300.0" height="316.5" rx="16" fill="#E0F2F1" stroke="#00796B" stroke-width="2.5" stroke-dasharray="6,5"/>
+<text x="62.0" y="149.0" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="17" font-weight="bold" fill="#00796B" text-anchor="start">線上：即時網路</text>
+<text x="199.8" y="149.0" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#5B6770" text-anchor="start">＝訓練資料來源</text>
+<rect x="58.0" y="168.0" width="272.0" height="113.3" rx="10" fill="#E0F2F1" stroke="#00796B" stroke-width="2"/>
+<text x="70.0" y="190.0" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="15" font-weight="bold" fill="#00796B" text-anchor="start">pyshark 即時抓包</text>
+<text x="70.0" y="212.2" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#1F2933" text-anchor="start">從網卡或 PCAP 讀封包，彙整成連線紀</text>
+<text x="70.0" y="232.1" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#1F2933" text-anchor="start">錄 conn.log；每個 PCAP 的 SHA-256</text>
+<text x="70.0" y="252.0" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#1F2933" text-anchor="start">記入抓包清單</text>
+<text x="318.0" y="274.3" font-family="'DejaVu Sans Mono',Consolas,'Courier New',monospace" font-size="11.5" font-weight="normal" fill="#5B6770" text-anchor="end">aisoc/capture/</text>
+<rect x="58.0" y="293.3" width="272.0" height="133.2" rx="10" fill="#E0F2F1" stroke="#00796B" stroke-width="2"/>
+<text x="70.0" y="315.3" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="15" font-weight="bold" fill="#00796B" text-anchor="start">Slips IPS 偵測／攔截</text>
+<text x="70.0" y="337.6" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#1F2933" text-anchor="start">StratosphereLinuxIPS 產生</text>
+<text x="70.0" y="357.4" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#1F2933" text-anchor="start">alerts.json，作為已知分支的標籤來源</text>
+<text x="70.0" y="377.3" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#1F2933" text-anchor="start">；可選 nftables 攔截；告警也可直接</text>
+<text x="70.0" y="397.2" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#1F2933" text-anchor="start">供應推理</text>
+<text x="318.0" y="419.5" font-family="'DejaVu Sans Mono',Consolas,'Courier New',monospace" font-size="11.5" font-weight="normal" fill="#5B6770" text-anchor="end">adapters/slips.py</text>
+<rect x="364.0" y="124.0" width="528.0" height="495.1" rx="16" fill="#E8EAF6" stroke="#3F51B5" stroke-width="2.5" stroke-dasharray="6,5"/>
+<text x="382.0" y="149.0" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="17" font-weight="bold" fill="#3F51B5" text-anchor="start">離線訓練域（與沙箱無直連）</text>
+<text x="625.8" y="149.0" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#5B6770" text-anchor="start">aisoc/training/</text>
+<rect x="378.0" y="168.0" width="500.0" height="59.6" rx="10" fill="#E8EAF6" stroke="#3F51B5" stroke-width="2"/>
+<text x="390.0" y="190.0" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="15" font-weight="bold" fill="#3F51B5" text-anchor="start">① 簽名資料集副本（dataset_curator 鑰匙）</text>
+<text x="390.0" y="212.2" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#1F2933" text-anchor="start">整份雜湊 flows_sha256 → 簽名 → 快照；載入時先驗簽再用</text>
+<rect x="378.0" y="237.6" width="500.0" height="59.6" rx="10" fill="#E8EAF6" stroke="#3F51B5" stroke-width="2"/>
+<text x="390.0" y="259.6" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="15" font-weight="bold" fill="#3F51B5" text-anchor="start">② 資料校驗與清洗</text>
+<text x="390.0" y="281.8" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#1F2933" text-anchor="start">時間序切分 train／val／test；測試集永不參與擬合或調門檻</text>
+<path d="M628.0,227.6 L628.0,237.6" fill="none" stroke="#1F2933" stroke-width="2.2" marker-end="url(#arrow)" stroke-linejoin="round"/>
+<rect x="378.0" y="307.1" width="244.0" height="119.2" rx="10" fill="#E8EAF6" stroke="#3F51B5" stroke-width="2"/>
+<text x="390.0" y="329.1" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="15" font-weight="bold" fill="#3F51B5" text-anchor="start">③a 已知分支 f_k（監督）</text>
+<text x="390.0" y="351.4" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#1F2933" text-anchor="start">輸出類別＋校準信心 c_k；c_k &lt;</text>
+<text x="390.0" y="371.2" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#1F2933" text-anchor="start">τ_k（0.7）⇒ 拒答 rejected，不</text>
+<text x="390.0" y="391.1" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#1F2933" text-anchor="start">硬塞舊類別</text>
+<rect x="634.0" y="307.1" width="244.0" height="119.2" rx="10" fill="#E8EAF6" stroke="#3F51B5" stroke-width="2"/>
+<text x="646.0" y="329.1" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="15" font-weight="bold" fill="#3F51B5" text-anchor="start">③b 異常分支 f_a（無監督）</text>
+<text x="646.0" y="351.4" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#1F2933" text-anchor="start">Isolation Forest（或</text>
+<text x="646.0" y="371.2" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#1F2933" text-anchor="start">Autoencoder）只學正常基線；τ_a</text>
+<text x="646.0" y="391.1" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#1F2933" text-anchor="start">＝驗證集正常樣本 99.5 分位，依</text>
+<text x="646.0" y="411.0" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#1F2933" text-anchor="start">服務群組</text>
+<path d="M628.0,297.1 L628.0,307.1" fill="none" stroke="#1F2933" stroke-width="2.2" marker-end="url(#arrow)" stroke-linejoin="round"/>
+<rect x="378.0" y="436.3" width="500.0" height="79.4" rx="10" fill="#E8EAF6" stroke="#3F51B5" stroke-width="2"/>
+<text x="390.0" y="458.3" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="15" font-weight="bold" fill="#3F51B5" text-anchor="start">④ 留一家族評估（LOFO）＋ 每日誤報</text>
+<text x="390.0" y="480.5" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#1F2933" text-anchor="start">整個攻擊家族不參與訓練，量化「沒見過也能抓到」的能力；對抗／穩健性</text>
+<text x="390.0" y="500.4" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#1F2933" text-anchor="start">評估</text>
+<path d="M628.0,426.3 L628.0,436.3" fill="none" stroke="#1F2933" stroke-width="2.2" marker-end="url(#arrow)" stroke-linejoin="round"/>
+<rect x="378.0" y="525.7" width="500.0" height="79.4" rx="10" fill="#E8EAF6" stroke="#3F51B5" stroke-width="2"/>
+<text x="390.0" y="547.7" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="15" font-weight="bold" fill="#3F51B5" text-anchor="start">⑤ 模型登記＋簽名發布清單（model_release 鑰匙）→ ⑥ 發布閘門</text>
+<text x="390.0" y="570.0" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#1F2933" text-anchor="start">清單釘住模型 SHA-256；閘門驗哈希、驗簽、人工批准；未批准＝不得進</text>
+<text x="390.0" y="589.9" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#1F2933" text-anchor="start">沙箱</text>
+<path d="M628.0,515.7 L628.0,525.7" fill="none" stroke="#1F2933" stroke-width="2.2" marker-end="url(#arrow)" stroke-linejoin="round"/>
+<path d="M330.0,224.7 L354.0,224.7" fill="none" stroke="#1F2933" stroke-width="2.2" stroke-linejoin="round"/>
+<path d="M330.0,359.9 L354.0,359.9" fill="none" stroke="#1F2933" stroke-width="2.2" stroke-linejoin="round"/>
+<path d="M354.0,224.7 L354.0,359.9" fill="none" stroke="#1F2933" stroke-width="2.2" stroke-linejoin="round"/>
+<path d="M354.0,197.8 L378.0,197.8" fill="none" stroke="#1F2933" stroke-width="2.2" marker-end="url(#arrow)" stroke-linejoin="round"/>
+<path d="M354.0,224.7 L354.0,197.8" fill="none" stroke="#1F2933" stroke-width="2.2" stroke-linejoin="round"/>
+<rect x="44.0" y="663.1" width="848.0" height="161.3" rx="10" fill="#E3F2FD" stroke="#1565C0" stroke-width="2"/>
+<text x="56.0" y="688.1" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="18" font-weight="bold" fill="#1565C0" text-anchor="start">AI-IDPS：dual_model 沙箱內推理（管理域 A，最低權限）</text>
+<text x="56.0" y="712.5" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14.5" font-weight="normal" fill="#1F2933" text-anchor="start">載入前只驗哈希與簽名（release.load_verified_model），不信任檔名與路徑；沙箱內只有唯讀模型、特徵窗口與唯一通道，</text>
+<text x="56.0" y="733.1" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14.5" font-weight="normal" fill="#1F2933" text-anchor="start">沒有私鑰、訓練資料、標籤、其他網路</text>
+<text x="56.0" y="753.7" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14.5" font-weight="normal" fill="#1F2933" text-anchor="start">已知分支 c_k ＋ 異常分支 s_a → Table III 六條規則（見圖 2）→ 六種案件狀態</text>
+<text x="56.0" y="774.3" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14.5" font-weight="normal" fill="#1F2933" text-anchor="start">KNOWN_SUSPICIOUS／SUSPECTED_UNKNOWN／MODEL_CONFLICT ⇒ 派 Agent｜INSUFFICIENT_EVIDENCE／</text>
+<text x="56.0" y="794.9" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14.5" font-weight="normal" fill="#1F2933" text-anchor="start">LOW_RISK_OBSERVE 不派｜缺資料或模型失敗 ⇒ UNKNOWN，絕不當成正常</text>
+<text x="880.0" y="817.4" font-family="'DejaVu Sans Mono',Consolas,'Courier New',monospace" font-size="11.5" font-weight="normal" fill="#5B6770" text-anchor="end">aisoc/idps/</text>
+<path d="M628.0,619.1 L628.0,663.1" fill="none" stroke="#1F2933" stroke-width="2.2" marker-end="url(#arrow)" stroke-linejoin="round"/>
+<rect x="633.0" y="633.1" width="231.0" height="19" rx="4" fill="#FFFFFF" opacity="0.94"/>
+<text x="638.0" y="645.1" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="13" font-weight="normal" fill="#5B6770" text-anchor="start">模型位元組＋清單（只驗哈希與簽名）</text>
+<path d="M194.0,440.5 L194.0,663.1" fill="none" stroke="#1F2933" stroke-width="2.2" marker-end="url(#arrow)" stroke-linejoin="round"/>
+<rect x="125.0" y="533.8" width="137.9" height="19" rx="4" fill="#FFFFFF" opacity="0.94"/>
+<text x="194.0" y="545.8" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="13" font-weight="normal" fill="#5B6770" text-anchor="middle">即時流量／Slips 告警</text>
+<rect x="95.9" y="554.8" width="196.2" height="18" rx="4" fill="#FFFFFF" opacity="0.94"/>
+<text x="194.0" y="565.8" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="12" font-weight="normal" fill="#5B6770" text-anchor="middle">（外部已知分支 decide_external）</text>
+<rect x="1012.0" y="84.0" width="880.0" height="768.0" rx="16" fill="#FFF6E8" stroke="#C77D16" stroke-width="2.5"/>
+<text x="1030.0" y="114.0" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="22" font-weight="bold" fill="#C77D16" text-anchor="start">第二部分　AI-Sandbox：處置（Response）</text>
+<text x="1481.5" y="114.0" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#5B6770" text-anchor="start">Agent 只會「請求」，沙箱外的控制面才能「授權與執行」</text>
+<rect x="1028.0" y="124.0" width="396.0" height="521.4" rx="16" fill="#FFF8E1" stroke="#F9A825" stroke-width="2.5" stroke-dasharray="6,5"/>
+<text x="1046.0" y="149.0" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="17" font-weight="bold" fill="#F9A825" text-anchor="start">沙箱（管理域 A）</text>
+<text x="1200.0" y="149.0" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#5B6770" text-anchor="start">最低權限、唯讀、只有 vsock</text>
+<rect x="1480.0" y="124.0" width="396.0" height="521.4" rx="16" fill="#FBE9E7" stroke="#D84315" stroke-width="2.5" stroke-dasharray="6,5"/>
+<text x="1498.0" y="149.0" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="17" font-weight="bold" fill="#D84315" text-anchor="start">控制面（沙箱外）</text>
+<text x="1653.4" y="149.0" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#5B6770" text-anchor="start">四道閘門，每一道都上帳</text>
+<rect x="1042.0" y="168.0" width="368.0" height="132.8" rx="10" fill="#FFF8E1" stroke="#F9A825" stroke-width="2"/>
+<text x="1054.0" y="190.0" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="15" font-weight="bold" fill="#F9A825" text-anchor="start">凍結工作單 WorkOrder ＋ 最小能力授予</text>
+<text x="1054.0" y="209.5" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="15" font-weight="bold" fill="#F9A825" text-anchor="start">CapabilityGrant</text>
+<text x="1054.0" y="231.8" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#1F2933" text-anchor="start">範圍只有 host:&lt;來源主機&gt;／case:&lt;案件&gt;；1 小時、最</text>
+<text x="1054.0" y="251.6" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#1F2933" text-anchor="start">多 3 次；只有 KNOWN_SUSPICIOUS 才含 block_host</text>
+<text x="1054.0" y="271.5" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#1F2933" text-anchor="start">，疑似零日／衝突只給可逆動作</text>
+<text x="1398.0" y="293.8" font-family="'DejaVu Sans Mono',Consolas,'Courier New',monospace" font-size="11.5" font-weight="normal" fill="#5B6770" text-anchor="end">soc.py::_freeze_task</text>
+<rect x="1042.0" y="310.8" width="368.0" height="93.4" rx="10" fill="#FFF8E1" stroke="#F9A825" stroke-width="2"/>
+<text x="1054.0" y="332.8" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="15" font-weight="bold" fill="#F9A825" text-anchor="start">Agent（假設可被攻陷）</text>
+<text x="1054.0" y="355.1" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#1F2933" text-anchor="start">只讀工具、無鑰匙、無網卡、無憑證；所有動作都是</text>
+<text x="1054.0" y="374.9" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#1F2933" text-anchor="start">「請求」不是命令；外部輸入一律視為不可信</text>
+<text x="1398.0" y="397.2" font-family="'DejaVu Sans Mono',Consolas,'Courier New',monospace" font-size="11.5" font-weight="normal" fill="#5B6770" text-anchor="end">sandbox/agent.py · untrusted.py</text>
+<path d="M1226.0,300.8 L1226.0,310.8" fill="none" stroke="#1F2933" stroke-width="2.2" marker-end="url(#arrow)" stroke-linejoin="round"/>
+<rect x="1042.0" y="414.2" width="368.0" height="93.4" rx="10" fill="#FFF8E1" stroke="#F9A825" stroke-width="2"/>
+<text x="1054.0" y="436.2" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="15" font-weight="bold" fill="#F9A825" text-anchor="start">唯一出口：出口代理 Egress Proxy</text>
+<text x="1054.0" y="458.5" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#1F2933" text-anchor="start">先記帳、後轉發；記不了就丟（fail-closed）；限流</text>
+<text x="1054.0" y="478.4" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#1F2933" text-anchor="start">、會話控制；每則訊息綁 agent_id 與案件</text>
+<text x="1398.0" y="500.7" font-family="'DejaVu Sans Mono',Consolas,'Courier New',monospace" font-size="11.5" font-weight="normal" fill="#5B6770" text-anchor="end">sandbox/egress.py</text>
+<path d="M1226.0,404.2 L1226.0,414.2" fill="none" stroke="#1F2933" stroke-width="2.2" marker-end="url(#arrow)" stroke-linejoin="round"/>
+<rect x="1042.0" y="517.7" width="368.0" height="79.4" rx="10" fill="#FFFFFF" stroke="#F9A825" stroke-width="2"/>
+<text x="1054.0" y="539.7" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="15" font-weight="bold" fill="#F9A825" text-anchor="start">逃逸後也拿不到</text>
+<text x="1054.0" y="561.9" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#1F2933" text-anchor="start">私鑰、訓練資料、標籤、其他網路、宿主檔案、寫模</text>
+<text x="1054.0" y="581.8" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#1F2933" text-anchor="start">型、改配置 ⇒ 偽造不了責任鏈</text>
+<path d="M1226.0,507.7 L1226.0,517.7" fill="none" stroke="#1F2933" stroke-width="2.2" marker-end="url(#arrow)" stroke-linejoin="round"/>
+<rect x="1494.0" y="168.0" width="368.0" height="113.3" rx="10" fill="#FBE9E7" stroke="#D84315" stroke-width="2"/>
+<text x="1506.0" y="190.0" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="15" font-weight="bold" fill="#D84315" text-anchor="start">① 政策引擎 → allowed／reserved／denied</text>
+<text x="1506.0" y="212.2" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#1F2933" text-anchor="start">越權、跨租戶、不在工作單或能力授予內 ⇒ denied；</text>
+<text x="1506.0" y="232.1" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#1F2933" text-anchor="start">低影響可逆 ⇒ allowed；高影響或出站 ⇒ reserved（</text>
+<text x="1506.0" y="252.0" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#1F2933" text-anchor="start">必須人簽）</text>
+<text x="1850.0" y="274.3" font-family="'DejaVu Sans Mono',Consolas,'Courier New',monospace" font-size="11.5" font-weight="normal" fill="#5B6770" text-anchor="end">sandbox/policy.py</text>
+<rect x="1494.0" y="291.3" width="368.0" height="93.4" rx="10" fill="#FBE9E7" stroke="#D84315" stroke-width="2"/>
+<text x="1506.0" y="313.3" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="15" font-weight="bold" fill="#D84315" text-anchor="start">② 人類審批：簽名，綁定請求摘要</text>
+<text x="1506.0" y="335.6" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#1F2933" text-anchor="start">看到完整 ApprovalView 才簽；簽名綁 request_digest</text>
+<text x="1506.0" y="355.4" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#1F2933" text-anchor="start">，批了 A 不能拿去執行 B（防橡皮圖章）</text>
+<text x="1850.0" y="377.7" font-family="'DejaVu Sans Mono',Consolas,'Courier New',monospace" font-size="11.5" font-weight="normal" fill="#5B6770" text-anchor="end">sandbox/authorization.py</text>
+<path d="M1678.0,281.3 L1678.0,291.3" fill="none" stroke="#1F2933" stroke-width="2.2" marker-end="url(#arrow)" stroke-linejoin="round"/>
+<rect x="1494.0" y="394.7" width="368.0" height="113.3" rx="10" fill="#FBE9E7" stroke="#D84315" stroke-width="2"/>
+<text x="1506.0" y="416.7" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="15" font-weight="bold" fill="#D84315" text-anchor="start">③ 簽名服務 → 單次、短時效、綁範圍的授權</text>
+<text x="1506.0" y="439.0" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#1F2933" text-anchor="start">私鑰在沙箱外（部署時放 HSM）；nonce 單次、</text>
+<text x="1506.0" y="458.9" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#1F2933" text-anchor="start">expires_at 短；綁 action／resource／tenant／</text>
+<text x="1506.0" y="478.8" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#1F2933" text-anchor="start">destination；絕不盲簽</text>
+<text x="1850.0" y="501.1" font-family="'DejaVu Sans Mono',Consolas,'Courier New',monospace" font-size="11.5" font-weight="normal" fill="#5B6770" text-anchor="end">sandbox/authorization.py</text>
+<path d="M1678.0,384.7 L1678.0,394.7" fill="none" stroke="#1F2933" stroke-width="2.2" marker-end="url(#arrow)" stroke-linejoin="round"/>
+<rect x="1494.0" y="518.0" width="368.0" height="113.3" rx="10" fill="#FBE9E7" stroke="#D84315" stroke-width="2"/>
+<text x="1506.0" y="540.0" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="15" font-weight="bold" fill="#D84315" text-anchor="start">④ PEP：八項檢查全過才執行 ⇒ 簽名收據</text>
+<text x="1506.0" y="562.3" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#1F2933" text-anchor="start">簽名 → 綁定 → 時效 → 撤銷 → 高影響須帶人批摘要</text>
+<text x="1506.0" y="582.2" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#1F2933" text-anchor="start">→ 冪等 → 單次 nonce → 受限執行；任一失敗也簽「</text>
+<text x="1506.0" y="602.1" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#1F2933" text-anchor="start">rejected」收據</text>
+<text x="1850.0" y="624.4" font-family="'DejaVu Sans Mono',Consolas,'Courier New',monospace" font-size="11.5" font-weight="normal" fill="#5B6770" text-anchor="end">sandbox/pep.py</text>
+<path d="M1678.0,508.0 L1678.0,518.0" fill="none" stroke="#1F2933" stroke-width="2.2" marker-end="url(#arrow)" stroke-linejoin="round"/>
+<path d="M892.0,703.1 L960.0,703.1 L960.0,234.4 L1028.0,234.4" fill="none" stroke="#1F2933" stroke-width="2.6" marker-end="url(#arrow)" stroke-linejoin="round"/>
+<rect x="906.0" y="449.8" width="108.0" height="20" rx="4" fill="#FFFFFF" opacity="0.94"/>
+<text x="960.0" y="462.8" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="bold" fill="#1F2933" text-anchor="middle">需要調查的案件</text>
+<rect x="918.0" y="471.8" width="83.9" height="18" rx="4" fill="#FFFFFF" opacity="0.94"/>
+<text x="960.0" y="482.8" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="12" font-weight="normal" fill="#5B6770" text-anchor="middle">派 Agent 調查</text>
+<path d="M1410.0,461.0 L1452.0,461.0 L1452.0,224.7 L1494.0,224.7" fill="none" stroke="#1F2933" stroke-width="2.2" marker-end="url(#arrow)" stroke-linejoin="round"/>
+<rect x="1428.2" y="327.3" width="47.5" height="18.5" rx="4" fill="#FFFFFF" opacity="0.94"/>
+<text x="1452.0" y="338.8" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="12.5" font-weight="bold" fill="#1F2933" text-anchor="middle">報告／</text>
+<rect x="1422.0" y="345.3" width="60.0" height="18.5" rx="4" fill="#FFFFFF" opacity="0.94"/>
+<text x="1452.0" y="356.8" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="12.5" font-weight="bold" fill="#1F2933" text-anchor="middle">動作請求</text>
+<rect x="1028.0" y="669.4" width="396.0" height="93.4" rx="10" fill="#F3E5F5" stroke="#6A1B9A" stroke-width="2"/>
+<text x="1040.0" y="691.4" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="15" font-weight="bold" fill="#6A1B9A" text-anchor="start">執行器 Executor</text>
+<text x="1040.0" y="713.6" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#1F2933" text-anchor="start">封鎖主機（nftables）／標記／觀察名單；只在 PEP 八項</text>
+<text x="1040.0" y="733.5" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#1F2933" text-anchor="start">檢查全過後才有副作用；撤銷清單可即時收回授權</text>
+<text x="1412.0" y="755.8" font-family="'DejaVu Sans Mono',Consolas,'Courier New',monospace" font-size="11.5" font-weight="normal" fill="#5B6770" text-anchor="end">sandbox/nftables.py</text>
+<rect x="1480.0" y="669.4" width="396.0" height="93.4" rx="10" fill="#F3E5F5" stroke="#6A1B9A" stroke-width="2"/>
+<text x="1492.0" y="691.4" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="15" font-weight="bold" fill="#6A1B9A" text-anchor="start">工具側日誌 ToolSideLog（第二本帳）</text>
+<text x="1492.0" y="713.6" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#1F2933" text-anchor="start">執行與拒絕都由 executor 鑰匙簽收據；驗證器拿它與帳本</text>
+<text x="1492.0" y="733.5" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#1F2933" text-anchor="start">對賬，抓出「有做沒記」（bypass）</text>
+<text x="1864.0" y="755.8" font-family="'DejaVu Sans Mono',Consolas,'Courier New',monospace" font-size="11.5" font-weight="normal" fill="#5B6770" text-anchor="end">sandbox/pep.py</text>
+<path d="M1678.0,631.4 L1678.0,669.4" fill="none" stroke="#1F2933" stroke-width="2.2" marker-end="url(#arrow)" stroke-linejoin="round"/>
+<rect x="1711.0" y="649.4" width="34.0" height="18" rx="4" fill="#FFFFFF" opacity="0.94"/>
+<text x="1728.0" y="660.4" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="12" font-weight="normal" fill="#5B6770" text-anchor="middle">收據</text>
+<path d="M1530.0,631.4 L1530.0,658.4 L1226.0,658.4 L1226.0,669.4" fill="none" stroke="#1F2933" stroke-width="2.2" marker-end="url(#arrow)" stroke-linejoin="round"/>
+<rect x="1257.8" y="643.4" width="76.5" height="18" rx="4" fill="#FFFFFF" opacity="0.94"/>
+<text x="1296.0" y="654.4" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="12" font-weight="normal" fill="#5B6770" text-anchor="middle">通過 ⇒ 執行</text>
+<rect x="1028.0" y="776.8" width="848.0" height="50.0" rx="10" fill="#FFFFFF" stroke="#C77D16" stroke-width="2"/>
+<text x="1452.0" y="796.8" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="bold" fill="#C77D16" text-anchor="middle">逃逸攻擊鏈情境 19 條全部擋下（aisoc/scenarios.py；滲透測試報告 docs/PENTEST-REPORT.zh-TW.md）</text>
+<text x="1452.0" y="816.8" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="12.5" font-weight="normal" fill="#5B6770" text-anchor="middle">注入攻陷 Agent・跨租戶・重放・過期・撤銷・改參數・竄改／截斷帳本・繞過帳本執行・消融：移除 nonce／人批／外部見證</text>
+<rect x="28.0" y="876.0" width="1864.0" height="180.0" rx="16" fill="#ECEFF1" stroke="#37474F" stroke-width="2.5"/>
+<text x="46.0" y="904.0" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="20" font-weight="bold" fill="#37474F" text-anchor="start">OWP 帳本（aisoc/owp/）— 問責（Accountability）：每一步都寫帳本，先記帳、後動作</text>
+<text x="46.0" y="932.0" font-family="'DejaVu Sans Mono',Consolas,'Courier New',monospace" font-size="12.5" font-weight="normal" fill="#5B6770" text-anchor="start">帳本事件（依發生順序）：detection → work_order → capability_grant → agent_egress → investigation_report → action_request → policy_decision → human_approval → authorization → action_receipt → verification_decision → acceptance_decision</text>
+<rect x="46.0" y="948.0" width="446.5" height="79.4" rx="10" fill="#FFFFFF" stroke="#37474F" stroke-width="2"/>
+<text x="58.0" y="970.0" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="15" font-weight="bold" fill="#37474F" text-anchor="start">只存指紋，不存原始流量</text>
+<text x="58.0" y="992.2" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#1F2933" text-anchor="start">偵測、工作單、授權、人批、收據皆以摘要入帳；原始證據放</text>
+<text x="58.0" y="1012.1" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#1F2933" text-anchor="start">WORM／加密庫，監管者不必接觸流量</text>
+<rect x="506.5" y="948.0" width="446.5" height="79.4" rx="10" fill="#FFFFFF" stroke="#37474F" stroke-width="2"/>
+<text x="518.5" y="970.0" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="15" font-weight="bold" fill="#37474F" text-anchor="start">哈希鏈 ＋ Merkle 檢查點 ＋ 外部見證</text>
+<text x="518.5" y="992.2" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#1F2933" text-anchor="start">每個案件結束簽 Merkle 根；見證者錨定長度與根 ⇒ 事後竄改或截</text>
+<text x="518.5" y="1012.1" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#1F2933" text-anchor="start">斷都被抓到</text>
+<rect x="967.0" y="948.0" width="446.5" height="79.4" rx="10" fill="#FFFFFF" stroke="#37474F" stroke-width="2"/>
+<text x="979.0" y="970.0" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="15" font-weight="bold" fill="#37474F" text-anchor="start">獨立驗證器離線對賬（owp/verifier.py）</text>
+<text x="979.0" y="992.2" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#1F2933" text-anchor="start">逐筆驗鏈、驗簽名、對收據、找「未入帳的執行」→ VERIFIED／</text>
+<text x="979.0" y="1012.1" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#1F2933" text-anchor="start">UNKNOWN／FAILED</text>
+<rect x="1427.5" y="948.0" width="446.5" height="79.4" rx="10" fill="#FFFFFF" stroke="#37474F" stroke-width="2"/>
+<text x="1439.5" y="970.0" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="15" font-weight="bold" fill="#37474F" text-anchor="start">接受決定 ＋ 任何人可用公鑰驗證</text>
+<text x="1439.5" y="992.2" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#1F2933" text-anchor="start">VERIFIED→ACCEPTED／UNKNOWN→DEFERRED／FAILED→</text>
+<text x="1439.5" y="1012.1" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="14" font-weight="normal" fill="#1F2933" text-anchor="start">REJECTED；trusted-keys.json 只含公鑰</text>
+<path d="M184.0,852.0 L184.0,876.0" fill="none" stroke="#37474F" stroke-width="2.2" stroke-dasharray="7,6" marker-end="url(#arrow-grey)" stroke-linejoin="round"/>
+<rect x="187.0" y="858.0" width="153.0" height="17" rx="4" fill="#FFFFFF" opacity="0.94"/>
+<text x="192.0" y="868.0" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="11" font-weight="normal" fill="#5B6770" text-anchor="start">detection／dedup_suppressed</text>
+<path d="M1108.0,852.0 L1108.0,876.0" fill="none" stroke="#37474F" stroke-width="2.2" stroke-dasharray="7,6" marker-end="url(#arrow-grey)" stroke-linejoin="round"/>
+<rect x="1111.0" y="858.0" width="232.6" height="17" rx="4" fill="#FFFFFF" opacity="0.94"/>
+<text x="1116.0" y="868.0" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="11" font-weight="normal" fill="#5B6770" text-anchor="start">work_order／capability_grant／agent_egress</text>
+<path d="M1816.0,852.0 L1816.0,876.0" fill="none" stroke="#37474F" stroke-width="2.2" stroke-dasharray="7,6" marker-end="url(#arrow-grey)" stroke-linejoin="round"/>
+<rect x="1474.3" y="858.0" width="338.7" height="17" rx="4" fill="#FFFFFF" opacity="0.94"/>
+<text x="1808.0" y="868.0" font-family="'WenQuanYi Zen Hei','Noto Sans CJK TC','Microsoft JhengHei','PingFang TC',sans-serif" font-size="11" font-weight="normal" fill="#5B6770" text-anchor="end">policy_decision／human_approval／authorization／action_receipt</text></svg>
