@@ -143,6 +143,9 @@ JCS 的規則：鍵按字典序排序、沒有多餘空白、數字用固定格�
 
 一句話總結論文主張：**我們不假設 Agent 永遠不會被攻破；而是讓它攻破後的每一步都無權、無鑰、無法抹去。**
 
+這張圖的圖像版（1920×1080，分「第一部分 AI-SOC」「第二部分 AI-Sandbox」兩塊，可直接放進 PPT）
+與逐塊說明在 [`DIAGRAMS.zh-TW.md`](DIAGRAMS.zh-TW.md) 圖 1。
+
 編排者是 `aisoc/soc.py::AISOC`，上面每一個箭頭都對應 `AISOC._run_case` 裡的一個步驟（程式碼裡標了「步驟 1～11」）。
 
 ---
@@ -482,6 +485,8 @@ rm -rf demo-output/     # 已在 .gitignore，不會被 commit
 | `INSUFFICIENT_EVIDENCE` | 拒答 ∧ 異常低 | 抽樣 | 否 | — |
 | `LOW_RISK_OBSERVE` | 正常 ∧ 異常低 | 否 | 否 | — |
 | `UNKNOWN` | 缺欄位／模型失敗／外部沒給結論 | **是** | 否 | — |
+
+這六種狀態怎麼從 `c_k`、`s_a` 一步步分出來，畫成決策樹在 [`DIAGRAMS.zh-TW.md`](DIAGRAMS.zh-TW.md) 圖 2。
 
 ---
 
