@@ -22,6 +22,9 @@ AiSOC is described in [`docs/INTEGRATION.md`](docs/INTEGRATION.md).
 核心概念、十三條準則對照程式碼與測試、逐步重現與預期輸出、「動手破壞它」練習、
 程式碼閱讀路線）。程式碼中每個重要函數上方都有 `【老師註解】` 區塊；
 `grep -rn "老師註解" aisoc/` 可列出全部。
+簡報用的兩張圖——系統工作流程架構圖（AI-SOC × AI-Sandbox × OWP 帳本）與 dual_model
+六種狀態決策樹——在 [`docs/DIAGRAMS.zh-TW.md`](docs/DIAGRAMS.zh-TW.md)
+（SVG／PNG 由 `docs/diagrams/make_diagrams.py` 產生，附 Mermaid 版）。
 
 ## Quick start
 
